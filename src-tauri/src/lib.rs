@@ -25,6 +25,23 @@ fn apply_windows_frame_theme(window: &tauri::WebviewWindow, is_dark: bool) {
 #[cfg(not(target_os = "windows"))]
 fn apply_windows_frame_theme(_window: &tauri::WebviewWindow, _is_dark: bool) {}
 
+/// #32 guard: the main window is created hidden (tauri.conf `visible: false`) and
+/// the window-state plugin is normally what shows it during state restore. If
+/// that restore errors midway (the plugin swallows the error) the process keeps
+/// running with no visible window: double-clicking the exe then does nothing and
+/// the exe file stays locked. Make showing the window deterministic instead.
+fn ensure_window_visible(window: &tauri::WebviewWindow) {
+    // A window restored onto a monitor that no longer exists is "visible" but
+    // undetectable for the user; pull it back on-screen first.
+    if window.current_monitor().map(|m| m.is_none()).unwrap_or(false) {
+        let _ = window.center();
+    }
+    if !matches!(window.is_visible(), Ok(true)) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 fn extract_md_path_from_args(argv: &[String]) -> Option<String> {
     for arg in argv.iter().skip(1) {
         if arg.starts_with("--") {
@@ -520,6 +537,11 @@ pub fn run() {
                 let _ = window.unminimize();
                 // Make sure it is actually visible.
                 let _ = window.show();
+                // A window restored onto a disconnected monitor looks like
+                // "clicking does nothing" as well; pull it back on-screen.
+                if window.current_monitor().map(|m| m.is_none()).unwrap_or(false) {
+                    let _ = window.center();
+                }
                 // Briefly raise to top-most and then drop it back, so Windows'
                 // foreground-lock cannot keep the window hidden behind others.
                 #[cfg(target_os = "windows")]
@@ -554,6 +576,8 @@ pub fn run() {
                     apply_windows_frame_theme(&window, true);
                 }
             }
+
+            ensure_window_visible(&window);
 
             Ok(())
         })
