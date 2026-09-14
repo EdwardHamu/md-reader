@@ -540,6 +540,10 @@ pub fn run() {
     }));
 
     tauri::Builder::default()
+        // Managed at builder level ON PURPOSE: RunEvent::Opened can be delivered
+        // before setup() runs (macOS hands the odoc event over during app
+        // initialization), and state() would panic on the unmanaged state (#33).
+        .manage(OpenedFilesState::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // Already-running instance: bring the window to the front (even when it is
             // minimized) and emit the new file path so the frontend opens it in a tab.
@@ -575,7 +579,6 @@ pub fn run() {
         .plugin(tauri_plugin_system_fonts::init())
         .setup(|app| {
             app.manage(WatcherState::default());
-            app.manage(OpenedFilesState::default());
 
             let window = app.get_webview_window("main").unwrap();
             let store = app.store(STORAGE_FILE)?;
