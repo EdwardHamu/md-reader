@@ -52,3 +52,4 @@ docs/
 
 # pnpm
 pnpm-lock.yaml.bak
+.zcode/
