@@ -42,34 +42,44 @@ jobs:
       - name: Reproduce odoc double-click crash
         run: |
           APP="$GITHUB_WORKSPACE/src-tauri/target/release/bundle/macos/MD Reader.app"
+          BIN="$APP/Contents/MacOS/md-reader"
           printf '# hello\n\nworld\n' > /tmp/repro.md
-          launchctl setenv RUST_BACKTRACE full
-          log stream --predicate 'processImagePath CONTAINS "md-reader"' --style compact > /tmp/md-stream.log 2>&1 &
-          STREAM_PID=$!
-          sleep 2
-          echo "== launching via Launch Services (odoc) =="
+          export RUST_BACKTRACE=full
+          echo "== test A: launch binary directly, deliver odoc via AppleScript =="
+          rm -f /tmp/md-reader-panic.log /tmp/stderr.log
+          "$BIN" > /tmp/stderr.log 2>&1 &
+          sleep 8
+          if ! pgrep -x md-reader > /dev/null; then
+            echo "== CRASHED AT LAUNCH (no odoc delivered) =="
+            tail -40 /tmp/stderr.log; cat /tmp/md-reader-panic.log 2>/dev/null
+            exit 0
+          fi
+          osascript -e 'tell application "MD Reader" to open POSIX file "/tmp/repro.md"' || echo "osascript failed"
+          sleep 8
+          if pgrep -x md-reader > /dev/null; then
+            echo "== ALIVE after odoc =="
+          else
+            echo "== CRASHED after odoc =="
+          fi
+          echo "== stderr =="
+          tail -60 /tmp/stderr.log
+          echo "== panic file =="
+          cat /tmp/md-reader-panic.log 2>/dev/null || echo "(no panic file)"
+          pkill -x md-reader 2>/dev/null; sleep 2
+          echo "== test B: Launch Services launch (reporter flow) =="
+          rm -f /tmp/md-reader-panic.log
           open -a "$APP" /tmp/repro.md
           sleep 15
           if pgrep -x md-reader > /dev/null; then
-            echo "== ALIVE: no crash =="
+            echo "== ALIVE =="
+            pkill -x md-reader
           else
-            echo "== CRASHED: process is gone =="
+            echo "== CRASHED =="
           fi
-          sleep 25
-          kill $STREAM_PID 2>/dev/null || true
-          echo "== panic lines in stream =="
-          grep -a -A 40 "panicked at" /tmp/md-stream.log | head -90 || echo "(no panic captured in stream)"
-          echo "== stream tail =="
-          tail -60 /tmp/md-stream.log
+          echo "== panic file =="
+          cat /tmp/md-reader-panic.log 2>/dev/null || echo "(no panic file)"
           echo "== diagnostic reports =="
           ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -5
-          NEWEST=$(ls -t ~/Library/Logs/DiagnosticReports/md-reader-*.ips 2>/dev/null | head -1)
-          if [ -n "$NEWEST" ]; then
-            echo "== $NEWEST =="
-            grep -a -B2 -A45 "Crashed" "$NEWEST" | head -120
-          else
-            echo "== no crash report found =="
-          fi
 
       - name: Upload crash reports
         if: always()

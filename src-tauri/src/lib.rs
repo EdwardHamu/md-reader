@@ -527,6 +527,18 @@ fn handle_opened_files(app: &tauri::AppHandle, urls: &[tauri::Url]) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Panic diagnostics: a Launch Services launch (Finder double-click) has no
+    // stderr, so persist panics with a backtrace to a temp file for triage.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let _ = std::fs::write(
+            "/tmp/md-reader-panic.log",
+            format!("panic: {info}\nbacktrace:\n{bt}\n"),
+        );
+        default_hook(info);
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // Already-running instance: bring the window to the front (even when it is
