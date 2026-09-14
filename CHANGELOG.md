@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 修复
+- 修复 macOS 上双击 `.md` 文件导致应用立即闪退的问题（#33）：Finder 通过 Open-Document Apple Event 投递文件，该事件在应用初始化极早期（setup 之前）就到达，此时文件打开队列尚未注册，`state()` panic 并因 `panic = "abort"` 直接退出。现将该状态提前到 Builder 级注册，从构造上消除时序问题；同时增加了 panic 诊断落盘（写入临时目录），避免 Launch Services 启动丢失 panic 信息。
+
 ## [0.3.8] - 2026-09-14
 
 ### 新增
