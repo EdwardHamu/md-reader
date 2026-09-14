@@ -1,0 +1,73 @@
+name: Debug #33 macOS double-click crash
+
+on:
+  workflow_dispatch:
+
+jobs:
+  repro:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      # Keep symbols in the binary so the crash report shows function names.
+      - name: Build Tauri app (unstripped, .app only)
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
+        uses: tauri-apps/tauri-action@v0
+        with:
+          args: --bundles app
+
+      - name: Reproduce odoc double-click crash
+        run: |
+          APP="$GITHUB_WORKSPACE/src-tauri/target/release/bundle/macos/MD Reader.app"
+          printf '# hello\n\nworld\n' > /tmp/repro.md
+          echo "== launching via Launch Services (odoc) =="
+          open -a "$APP" /tmp/repro.md
+          sleep 15
+          if pgrep -x md-reader > /dev/null; then
+            echo "== ALIVE: no crash =="
+          else
+            echo "== CRASHED: process is gone =="
+          fi
+          echo "== crash reports =="
+          ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -5
+          NEWEST=$(ls -t ~/Library/Logs/DiagnosticReports/md-reader-*.ips 2>/dev/null | head -1)
+          if [ -n "$NEWEST" ]; then
+            echo "== newest crash report: $NEWEST =="
+            head -c 20000 "$NEWEST"
+          else
+            echo "== no crash report found =="
+          fi
+          echo "== unified log (md-reader) =="
+          log show --last 3m --predicate 'processImagePath CONTAINS "md-reader"' --style compact 2>/dev/null | tail -60 || true
+
+      - name: Upload crash reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-reports
+          retention-days: 7
+          if-no-files-found: warn
+          path: ~/Library/Logs/DiagnosticReports/*.ips
