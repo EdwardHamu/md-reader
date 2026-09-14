@@ -9,7 +9,7 @@
 
 A lightweight, fast, WYSIWYG **Markdown viewer / reader / editor** desktop app. Built with **Tauri 2 + Vue 3 + Rust**.
 
-Small footprint (~6 MB), fast startup, multi-tab editing, source editing, KaTeX math, Mermaid diagrams, syntax highlighting, file tree, full-text search, and high-fidelity PDF/HTML/DOCX export.
+Small footprint (~6 MB), fast startup, multi-tab editing, source editing, KaTeX math, Mermaid diagrams, syntax highlighting, file tree, full-text search, and high-fidelity PDF/HTML/DOCX/PNG export.
 
 📦 **[Download the latest release](https://github.com/Neilooo/md-reader/releases/latest)**
 
@@ -60,6 +60,7 @@ Small footprint (~6 MB), fast startup, multi-tab editing, source editing, KaTeX 
 ### Export
 
 - **PDF**: Edge headless, 1-3 seconds, WYSIWYG, no LaTeX required; 24 preset templates plus font / color / spacing / page styling with live preview (see "PDF export styling" below)
+- **PNG long image**: renders the entire document into a single WYSIWYG image (math, diagrams, syntax highlighting, tables included); 2x scale by default, auto-fitted for very long documents
 - **HTML**: self-contained single file with images/CSS embedded
 - **DOCX**: powered by pandoc; optionally set a Word template `.docx` via `--reference-doc` to control fonts, headings and paragraph styles
 
@@ -146,7 +147,7 @@ Core reading and editing features require **no external tools**. Optional featur
 
 | Feature                                                                            | Dependency                          | Included on Windows 10/11 | Notes                         |
 | ---------------------------------------------------------------------------------- | ----------------------------------- | :-----------------------: | ----------------------------- |
-| Reading / editing / multi-tab / file tree / search / math / diagrams / HTML export | None                                |             —             | Works out of the box          |
+| Reading / editing / multi-tab / file tree / search / math / diagrams / HTML / PNG export | None                                |             —             | Works out of the box          |
 | **PDF export**                                                                     | Microsoft Edge (Chromium) / Chrome  | ✅ Edge usually included  | Used for WYSIWYG PDF export   |
 | **DOCX export**                                                                    | [pandoc](https://pandoc.org/) ≥ 2.x |            ❌             | Install only if you need DOCX |
 | Print                                                                              | System print dialog                 |            ✅             | Optional fallback             |
