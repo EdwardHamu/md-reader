@@ -116,6 +116,13 @@ const enUS = {
     pdf: "Export PDF",
     pdfHint: "Edge headless · WYSIWYG",
     pdfNoEdge: "Edge not detected (you can choose it when exporting)",
+    png: "Export PNG long image",
+    pngHint: "Full-page image · WYSIWYG",
+    generatingPng: "Generating PNG…",
+    exportedPng: "PNG exported",
+    dialogPng: "Export as PNG",
+    pngTooLong:
+      "Document too long for a single image; consider exporting as PDF",
     print: "Print / System PDF",
     printHint: "Browser print dialog",
     generatingPdf: "Generating PDF…",

@@ -35,6 +35,7 @@ export default defineConfig(async () => ({
               return "vendor-markdown";
             if (id.includes("@tauri-apps")) return "vendor-tauri";
             if (id.includes("vue")) return "vendor-vue";
+            if (id.includes("modern-screenshot")) return "vendor-screenshot";
           }
         },
       },

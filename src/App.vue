@@ -35,6 +35,7 @@ import {
   printDocument,
   type PandocInfo,
 } from "./composables/useExport";
+import { exportToPng } from "./composables/exportImage";
 import { useTheme } from "./composables/useTheme.ts";
 
 const { t, locale } = useI18n();
@@ -814,6 +815,31 @@ function doPrint() {
   if (bodyRef.value) printDocument(bodyRef.value, fileName.value);
 }
 
+async function exportImage() {
+  showExportMenu.value = false;
+  if (isEditing.value) {
+    errorMsg.value = t("editor.previewBeforeExport");
+    return;
+  }
+  if (!bodyRef.value || !draftContent.value) return;
+  exportBusy.value = true;
+  exportToast.value = t("export.generatingPng");
+  try {
+    const out = await exportToPng(
+      bodyRef.value,
+      fileName.value || "document",
+      currentFile.value || undefined
+    );
+    if (out) exportToast.value = `${t("export.exportedPng")}: ${out}`;
+    else exportToast.value = "";
+  } catch (e: any) {
+    errorMsg.value = `${t("export.exportFailed")}: ${e?.message ?? e}`;
+    exportToast.value = "";
+  } finally {
+    exportBusy.value = false;
+  }
+}
+
 function onSearchOpen(path: string, _line: number) {
   void loadFile(path);
 }
@@ -1313,6 +1339,10 @@ watch(
             <span class="mi-hint">
               {{ pdfEnginePath ? t("export.pdfHint") : t("export.pdfNoEdge") }}
             </span>
+          </button>
+          <button class="menu-item" :disabled="exportBusy" @click="exportImage">
+            <span class="mi-label">{{ t("export.png") }}</span>
+            <span class="mi-hint">{{ t("export.pngHint") }}</span>
           </button>
           <div class="menu-divider"></div>
           <button

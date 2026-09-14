@@ -26,7 +26,10 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function buildDefaultPath(sourceFilePath: string | undefined, defaultFileName: string): string {
+export function buildDefaultPath(
+  sourceFilePath: string | undefined,
+  defaultFileName: string
+): string {
   if (sourceFilePath) {
     const lastSep = Math.max(sourceFilePath.lastIndexOf("/"), sourceFilePath.lastIndexOf("\\"));
     if (lastSep >= 0) {
