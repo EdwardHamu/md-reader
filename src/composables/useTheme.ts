@@ -62,7 +62,7 @@ async function writeStoredThemeMode(mode: ThemeMode) {
 // Asynchronously load the stored theme on startup
 initStoredThemeMode();
 
-// perating system level theme state
+// Operating system level theme state
 const systemTheme: Ref<Theme> = ref("light");
 
 // Native media query object for operating system theme preferences
@@ -75,7 +75,7 @@ if (mediaQuery) {
   systemTheme.value = mediaQuery.matches ? "dark" : "light";
 }
 
-// eme preference changes
+// System theme preference changes
 const handleSystemThemeChange = (event: MediaQueryListEvent) => {
   const newTheme = event.matches ? "dark" : "light";
   if (isDev) console.info(`[Theme] System theme changed to: ${newTheme}`);

@@ -1,10 +1,17 @@
+<!--
+  文件树递归组件：数据来自 useFileTree 的 TreeNode[]，
+  组件引用自身渲染子目录。目录折叠状态按目录 path 记录在本地
+  （组件递归实例各自持有，刷新后折叠状态重置）。
+-->
 <script setup lang="ts">
 import { ref } from "vue";
 import type { TreeNode } from "../composables/useFileTree";
 
 defineProps<{
   nodes: TreeNode[];
+  /** 当前打开文件路径，用于高亮对应树节点。 */
   currentPath: string;
+  /** 递归深度（根调用不传），控制缩进。 */
   depth?: number;
 }>();
 
@@ -12,6 +19,7 @@ const emit = defineEmits<{
   (e: "open", path: string): void;
 }>();
 
+/** 目录 path → 是否折叠。 */
 const collapsed = ref<Record<string, boolean>>({});
 
 function toggle(key: string) {
@@ -22,6 +30,7 @@ function toggle(key: string) {
 <template>
   <ul class="tree" :class="{ root: !depth }">
     <li v-for="node in nodes" :key="node.path || node.name" class="tree-item">
+      <!-- 目录行：点击切换折叠，未折叠时递归渲染子级 -->
       <template v-if="node.isDir">
         <div
           class="row dir"
@@ -41,6 +50,7 @@ function toggle(key: string) {
           @open="(p) => emit('open', p)"
         />
       </template>
+      <!-- 文件行：点击打开（交给 App.vue 的 loadFile） -->
       <template v-else>
         <div
           class="row file"

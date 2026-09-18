@@ -1,3 +1,8 @@
+<!--
+  目录（大纲）面板：由渲染后的标题列表构建可折叠树。
+  activeId 来自 useScrollSpy 的滚动跟踪，用于高亮当前阅读位置；
+  点击条目通过 jump 事件让 App.vue 滚动到对应标题。
+-->
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
@@ -14,14 +19,17 @@ const emit = defineEmits<{
   (e: "jump", id: string): void;
 }>();
 
+/** 文档里出现的最高层级（比如从 h2 开始的文档），最浅一级不缩进。 */
 const minLevel = computed(() =>
   props.headings.length
     ? Math.min(...props.headings.map((h) => h.level))
     : 1
 );
 
+/** 被折叠的标题索引集合（按索引而非 id 记录）。 */
 const collapsed = ref<Set<number>>(new Set());
 
+// 切换文档后标题集合变化，折叠状态整体重置
 watch(
   () => props.headings,
   () => {
@@ -29,6 +37,11 @@ watch(
   }
 );
 
+/**
+ * 计算折叠后仍可见的标题索引：用栈维护祖先链——
+ * 弹出所有层级不小于当前标题的栈顶（它们不是当前标题的祖先），
+ * 若栈中存在被折叠的祖先则当前标题隐藏，否则可见。
+ */
 const visibleIndices = computed(() => {
   const result: number[] = [];
   const stack: { index: number; level: number }[] = [];
@@ -45,6 +58,7 @@ const visibleIndices = computed(() => {
   return result;
 });
 
+/** 是否有下级标题（紧邻的下一个标题层级更深即视为有子节点）。 */
 function hasChildren(index: number): boolean {
   return (
     index < props.headings.length - 1 &&
@@ -52,6 +66,7 @@ function hasChildren(index: number): boolean {
   );
 }
 
+/** 折叠/展开（替换整个 Set 以触发响应式更新）。 */
 function toggleCollapse(index: number) {
   const next = new Set(collapsed.value);
   if (next.has(index)) next.delete(index);
@@ -63,6 +78,7 @@ function expandAll() {
   collapsed.value = new Set();
 }
 
+/** 全部折叠：折叠所有"非顶级且有子节点"的标题。 */
 function collapseAll() {
   const top = new Set<number>();
   for (let i = 0; i < props.headings.length; i++) {
@@ -78,6 +94,7 @@ function collapseAll() {
   <div class="toc">
     <div class="toc-title">
       <span>{{ t("toc.title") }}</span>
+      <!-- 展开/折叠全部 -->
       <span v-if="headings.length" class="toc-actions">
         <button class="toc-action" @click="expandAll" :title="t('toc.expandAll')">
           ⊕
@@ -88,6 +105,7 @@ function collapseAll() {
       </span>
     </div>
     <div v-if="!headings.length" class="empty">{{ t("toc.empty") }}</div>
+    <!-- 只渲染可见条目；缩进深度 = level - minLevel -->
     <ul v-else class="toc-list">
       <li
         v-for="idx in visibleIndices"

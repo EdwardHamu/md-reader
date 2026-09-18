@@ -1,3 +1,13 @@
+<!--
+  Markdown 编辑器：CodeMirror 6 集成。
+  - 主题/只读/快捷键用 Compartment 动态重配（无需重建编辑器）
+  - 快捷键（加粗/高亮/行内代码等）从 useShortcuts 的用户可改绑定生成，
+    绑定变更时热更新 keymap
+  - 内置 CodeMirror 查找/替换面板 + 自绘的「当前/总数」计数器
+  - 粘贴图片自动落盘到文档同目录 images/ 并插入相对链接
+  对外（defineExpose）提供 App.vue 键盘分发用的接口：查找/替换/跳行/
+  可视行定位与滚动（编辑↔预览切换的位置同步锚点）。
+-->
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { basicSetup } from "codemirror";
@@ -39,15 +49,19 @@ const emit = defineEmits<{
 }>();
 
 const host = ref<HTMLElement | null>(null);
+// 自绘查找计数器状态（CM 自带面板没有这个信息）
 const searchCounter = ref({ visible: false, current: 0, total: 0 });
 let view: EditorView | null = null;
 let searchCounterTimer: number | null = null;
+// 上次计数器计算时的查询指纹，内容/选区没变就跳过重算
 let lastSearchKey = "";
 
+// 三个 Compartment：主题/只读/快捷键的运行时热切换
 const themeCompartment = new Compartment();
 const editableCompartment = new Compartment();
 const keymapCompartment = new Compartment();
 const { getBinding, toCodeMirror, overrides } = useShortcuts();
+// 让查找面板的「替换/全部替换」按钮显示出来（默认只搜不换）
 const replacePanelTheme = EditorView.baseTheme({
   ".cm-panel.cm-search [name=replace]": {
     display: "inline-block",
@@ -57,6 +71,7 @@ const replacePanelTheme = EditorView.baseTheme({
   },
 });
 
+// 基础主题：把 CM 外观接到应用的 CSS 变量（跟随阅读设置）
 const editorBaseTheme = EditorView.theme({
   "&": {
     height: "100%",
@@ -114,6 +129,7 @@ const editorBaseTheme = EditorView.theme({
   },
 });
 
+/** 主题扩展：暗色叠加 oneDark，亮色只用接 CSS 变量的基础主题。 */
 function themeExtension(): Extension {
   return props.theme === "dark"
     ? [oneDark, editorBaseTheme]
@@ -124,6 +140,7 @@ function editableExtension() {
   return EditorView.editable.of(!props.readonly);
 }
 
+/** 查询指纹：搜索面板开合 + 查询参数 + 文档长度的组合，用于跳过无谓重算。 */
 function searchKey(): string {
   if (!view) return "";
   if (!searchPanelOpen(view.state)) return "closed";
@@ -139,6 +156,11 @@ function searchKey(): string {
   });
 }
 
+/**
+ * 重算查找计数器（x/y）：全量遍历匹配游标统计 total；current 取与选区
+ * 完全重合的匹配，否则退而取选区之后的第一个匹配。CM 面板没有提供
+ * 这个信息，只能自己扫。
+ */
 function updateSearchCounter() {
   if (!view || !searchPanelOpen(view.state)) {
     lastSearchKey = "closed";
@@ -173,6 +195,7 @@ function updateSearchCounter() {
   };
 }
 
+/** 80ms 防抖更新计数器；指纹没变且有选区时跳过（输入/移动光标场景）。 */
 function scheduleSearchCounterUpdate(force = false) {
   if (!view) return;
   if (!force) {
@@ -186,6 +209,7 @@ function scheduleSearchCounterUpdate(force = false) {
   }, 80);
 }
 
+/** 打开查找面板后把焦点移到搜索输入框（CM 默认不聚焦）。 */
 function focusSearchInput() {
   if (!view) return;
   window.requestAnimationFrame(() => {
@@ -199,6 +223,11 @@ function focusSearchInput() {
   });
 }
 
+/**
+ * 构建格式化快捷键表（加粗/斜体/高亮/下划线/行内代码 + 模式切换/查找/替换）。
+ * 绑定来自 useShortcuts（用户可在设置里改），Prec.highest 保证压过
+ * basicSetup 自带的默认键。
+ */
 function buildKeymap() {
   return Prec.highest(
     keymap.of([
@@ -244,6 +273,7 @@ function buildKeymap() {
   );
 }
 
+/** 创建 CodeMirror 实例（挂载时一次）。updateListener 负责内容同步与计数器调度。 */
 function createEditor() {
   if (!host.value) return;
   view = new EditorView({
@@ -282,6 +312,7 @@ function createEditor() {
   updateSearchCounter();
 }
 
+/** 整体替换文档内容（外部 modelValue 变化时；会触发改动事件回流）。 */
 function replaceDoc(value: string) {
   if (!view) return;
   view.dispatch({
@@ -293,6 +324,10 @@ function replaceDoc(value: string) {
   });
 }
 
+/**
+ * 用前后缀包裹所有选区（格式化快捷键的核心）。多选区逐个处理并
+ * 累计偏移量修正后续位置；空选区退化为光标插入前后缀。
+ */
 function wrapSelection(prefix: string, suffix = prefix) {
   if (!view) return false;
   const state = view.state;
@@ -320,6 +355,7 @@ function wrapSelection(prefix: string, suffix = prefix) {
   return true;
 }
 
+/** 编辑器顶部可视行号（编辑→预览切换时的滚动锚点）。 */
 function getTopVisibleLine(): number {
   if (!view) return 1;
   const scroller = view.scrollDOM;
@@ -327,6 +363,7 @@ function getTopVisibleLine(): number {
   return view.state.doc.lineAt(block.from).number;
 }
 
+/** 滚动到指定行并把光标放到行首（预览→编辑切换时的对位）。 */
 function scrollToLine(line: number) {
   if (!view) return;
   const target = Math.min(Math.max(1, line), view.state.doc.lines);
@@ -338,6 +375,8 @@ function scrollToLine(line: number) {
   view.focus();
 }
 
+// ---- 对外暴露的接口（App.vue 键盘分发使用）----
+
 function focus() {
   view?.focus();
 }
@@ -348,6 +387,7 @@ function openSearch() {
   focusSearchInput();
 }
 
+/** 打开替换（CM 的搜索面板本身就含替换字段，等价于 openSearch）。 */
 function openReplace() {
   openSearch();
 }
@@ -357,11 +397,15 @@ function goToLine() {
   gotoLine(view);
 }
 
+// ---- 粘贴图片：落盘到文档同目录 images/ 并插入相对链接 ----
+
+/** 时间戳文件名：paste-YYYYMMDD-HHmmss.ext，避免重名覆盖。 */
 function formatTimestamp(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
+/** 图片存放目录：当前文档所在目录下的 images/。 */
 function getImageDir(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/");
   const i = normalized.lastIndexOf("/");
@@ -369,6 +413,7 @@ function getImageDir(filePath: string): string {
   return baseDir ? `${baseDir}/images` : "images";
 }
 
+/** 粘贴拦截：剪贴板里有图片就落盘插入，替代默认的（无意义）粘贴行为。 */
 function handlePaste(e: ClipboardEvent) {
   if (!props.currentFile || !view) return;
   const items = e.clipboardData?.items;
@@ -397,6 +442,7 @@ async function insertPastedImage(file: File, pos: number) {
     await mkdir(imageDir, { recursive: true });
     const bytes = new Uint8Array(await file.arrayBuffer());
     await writeFile(`${imageDir}/${fileName}`, bytes);
+    // 插入相对路径链接（渲染时 useLinkRewriter 会按文档目录解析）
     const markdown = `![](images/${fileName})\n`;
     view.dispatch({
       changes: { from: pos, insert: markdown },
@@ -410,6 +456,7 @@ async function insertPastedImage(file: File, pos: number) {
 
 onMounted(() => {
   createEditor();
+  // capture 阶段拦截 paste，赶在 CM 默认处理之前
   host.value?.addEventListener("paste", handlePaste, true);
 });
 
@@ -423,6 +470,7 @@ onBeforeUnmount(() => {
   }
 });
 
+// 外部内容变化 → 替换文档（仅当与当前文档不同，避免光标跳动）
 watch(
   () => props.modelValue,
   (value) => {
@@ -431,6 +479,7 @@ watch(
   }
 );
 
+// 主题/只读/快捷键绑定变化 → Compartment 热重配（不重建编辑器）
 watch(
   () => props.theme,
   () => {
@@ -467,7 +516,9 @@ defineExpose({
 
 <template>
   <div class="markdown-editor-shell">
+    <!-- CodeMirror 挂载宿主 -->
     <div ref="host" class="markdown-editor"></div>
+    <!-- 查找计数器浮层（面板打开且查询有效时显示） -->
     <div v-if="searchCounter.visible" class="editor-find-counter">
       {{ searchCounter.current }}/{{ searchCounter.total }}
     </div>

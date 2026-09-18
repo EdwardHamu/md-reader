@@ -1,3 +1,10 @@
+<!--
+  通用三按钮确认对话框（保存/放弃/取消）。两个复用场景：
+  1. 关闭脏标签页：保存并继续 / 放弃修改 / 取消；
+  2. 磁盘文件被外部修改：重新加载（丢草稿）/ 保留编辑 / 取消。
+  按钮文案通过 saveLabel/discardLabel 覆盖；组件本身无状态，
+  结果通过 save/discard/cancel 事件抛回 promise 化的 resolveDialog。
+-->
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
 

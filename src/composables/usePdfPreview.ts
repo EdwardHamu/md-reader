@@ -1,7 +1,7 @@
 // Live preview for the PDF export style panel. Reuses the exact same pipeline as
 // the real export (renderMarkdown + buildExportHtml) so what you see is what you get,
 // rendered in isolated <iframe srcdoc> that cannot affect the app's own styles.
-// Optionally renders a side-by-side 浅色 / 深色 (light / dark) comparison that keeps the
+// Optionally renders a side-by-side light / dark (浅色/深色) comparison that keeps the
 // user's chosen typography but forces a neutral light or dark page palette.
 import { onMounted, ref, watch, type Ref } from "vue";
 import { renderMarkdown } from "./useMarkdown";

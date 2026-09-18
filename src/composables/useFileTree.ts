@@ -1,7 +1,13 @@
+/**
+ * 文件树（模块级单例）：根目录选择/恢复 + 调后端 list_md_files 扫描 +
+ * 把扁平相对路径列表组装成目录树。根目录持久化在 localStorage。
+ */
+
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
+/** 后端 MdFile（snake_case 与 Rust 端序列化一致）。 */
 export interface MdFile {
   path: string;
   name: string;
@@ -15,6 +21,7 @@ export interface TreeNode {
   path: string;
   isDir: boolean;
   children?: TreeNode[];
+  /** 仅文件节点：原始扫描数据。 */
   file?: MdFile;
 }
 
@@ -23,6 +30,10 @@ const files = ref<MdFile[]>([]);
 const loading = ref<boolean>(false);
 const error = ref<string>("");
 
+/**
+ * 扁平文件列表 → 目录树：按 rel_path 逐级下钻，目录节点不存在则创建，
+ * 每个节点始终插到父节点 children 尾部（最后统一排序）。
+ */
 function buildTree(items: MdFile[]): TreeNode[] {
   const root: TreeNode = { name: "", path: "", isDir: true, children: [] };
   for (const f of items) {
@@ -57,6 +68,7 @@ function buildTree(items: MdFile[]): TreeNode[] {
   return root.children!;
 }
 
+/** 递归排序：目录在前，同级按中文 locale 比较文件名。 */
 function sortNode(node: TreeNode): void {
   if (!node.children) return;
   node.children.sort((a, b) => {
@@ -68,6 +80,7 @@ function sortNode(node: TreeNode): void {
 
 const tree = computed<TreeNode[]>(() => buildTree(files.value));
 
+/** 重新扫描根目录（打开目录/刷新/watcher 变更后调用）。 */
 async function refresh(): Promise<void> {
   if (!rootDir.value) return;
   loading.value = true;
@@ -84,6 +97,7 @@ async function refresh(): Promise<void> {
   }
 }
 
+/** 选择目录（对话框）并设为文件树根。 */
 async function openFolder(): Promise<string | null> {
   const selected = await open({ multiple: false, directory: true });
   if (typeof selected === "string") {
@@ -95,6 +109,7 @@ async function openFolder(): Promise<string | null> {
   return null;
 }
 
+/** 启动时恢复上次打开的根目录。 */
 async function restoreRoot(): Promise<void> {
   const saved = localStorage.getItem("md-reader-root");
   if (saved) {
@@ -103,6 +118,7 @@ async function restoreRoot(): Promise<void> {
   }
 }
 
+/** 关闭目录：清空树与持久化记录。 */
 function clearRoot(): void {
   rootDir.value = "";
   files.value = [];

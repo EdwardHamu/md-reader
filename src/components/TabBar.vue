@@ -1,3 +1,8 @@
+<!--
+  TabBar 多标签页条：激活/关闭标签、中键关闭、右键上下文菜单
+  （关闭其他/全部、刷新、复制路径、在资源管理器中显示）。
+  纯展示组件：所有操作通过事件抛给 App.vue，标签状态在 useTabs 单例里。
+-->
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
@@ -20,6 +25,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
+/** 右键菜单状态：visible + 定位 + 目标标签的 id/path。 */
 const menuState = ref<{
   visible: boolean;
   x: number;
@@ -34,6 +40,7 @@ const menuState = ref<{
   path: "",
 });
 
+/** 只取展示所需字段；文件名 = 路径最后一段（兼容 / 和 \）。 */
 const items = computed(() =>
   props.tabs.map((tab) => ({
     id: tab.id,
@@ -50,10 +57,12 @@ function basename(p: string): string {
   return parts[parts.length - 1];
 }
 
+/** 中键点击 = 关闭（浏览器习惯）。 */
 function onMiddle(id: string) {
   emit("close", id);
 }
 
+/** 右键菜单在鼠标坐标处以 fixed 定位弹出。 */
 function onContextMenu(e: MouseEvent, item: { id: string; path: string }) {
   if (!item.path) return;
   e.preventDefault();
@@ -70,6 +79,8 @@ function onContextMenu(e: MouseEvent, item: { id: string; path: string }) {
 function closeMenu() {
   menuState.value.visible = false;
 }
+
+// ---- 菜单项动作：都从 menuState 取目标标签，动作完成后收起菜单 ----
 
 function onClose() {
   if (menuState.value.id) emit("close", menuState.value.id);
@@ -109,6 +120,7 @@ function onCopyPath() {
 </script>
 
 <template>
+  <!-- menu-open 时取消 overflow 裁剪，否则 fixed 菜单会被横向滚动容器剪掉 -->
   <div class="tab-bar" :class="{ 'menu-open': menuState.visible }">
     <div
       v-for="item in items"
@@ -131,6 +143,7 @@ function onCopyPath() {
       </button>
     </div>
 
+    <!-- 右键菜单本体 + 全屏透明遮罩（点任意处关闭） -->
     <div
       v-if="menuState.visible"
       class="context-menu"

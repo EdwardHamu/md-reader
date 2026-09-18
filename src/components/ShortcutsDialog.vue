@@ -1,3 +1,9 @@
+<!--
+  快捷键设置对话框：按 global/find/editor 三类分组展示 useShortcuts
+  里注册的全部快捷键。点击键位按钮进入"录制"状态，下一个按键组合
+  即为新绑定；冲突/非法组合在行内红字提示。readonly 项仅展示不可改。
+  键盘监听挂在 window 捕获阶段，保证录制时先于 App.vue 的全局快捷键分发。
+-->
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useI18n } from "vue-i18n";
@@ -20,9 +26,12 @@ const {
   isModifierKey,
 } = useShortcuts();
 
+/** 当前正在录制新按键的快捷键 id；null = 未在录制。 */
 const recordingId = ref<string | null>(null);
+/** 冲突/非法提示（显示在正在录制的行下方）。 */
 const conflictMsg = ref("");
 
+/** 展示顺序固定为 全局 → 查找 → 编辑器。 */
 const categories = [
   { key: "global", label: "shortcuts.categoryGlobal" },
   { key: "find", label: "shortcuts.categoryFind" },
@@ -46,6 +55,12 @@ function cancelRecording() {
   conflictMsg.value = "";
 }
 
+/**
+ * 录制状态下的按键处理：
+ * - Escape：录制中则取消录制，否则关闭对话框；
+ * - 纯修饰键（Ctrl/Shift/Alt/Meta）忽略，等用户按出完整组合；
+ * - 组合非法（如无主键）或与其他快捷键冲突 → 行内提示，不退出录制。
+ */
 function onRecordKey(e: KeyboardEvent) {
   if (!props.visible) return;
   e.preventDefault();
@@ -76,6 +91,7 @@ function onRecordKey(e: KeyboardEvent) {
   }
 }
 
+// 捕获阶段监听：录制时抢在 App.vue 全局 keydown 之前消费按键
 onMounted(() => {
   window.addEventListener("keydown", onRecordKey, true);
 });
@@ -93,6 +109,7 @@ onBeforeUnmount(() => {
         <button class="sc-close" @click="emit('close')">✕</button>
       </div>
       <div class="sc-content">
+        <!-- 三类分组：每行 = 功能描述 + 键位按钮（录制中显示脉冲动画） -->
         <div v-for="cat in grouped" :key="cat.key" class="sc-category">
           <div class="sc-cat-title">{{ t(cat.label) }}</div>
           <div v-for="item in cat.items" :key="item.id" class="sc-item">
@@ -114,6 +131,7 @@ onBeforeUnmount(() => {
                 <span v-else class="sc-key readonly">{{
                   item.defaultBinding
                 }}</span>
+                <!-- 仅自定义过的绑定显示单项重置 -->
                 <button
                   v-if="!item.readonly && isCustom(item.id)"
                   class="sc-reset"

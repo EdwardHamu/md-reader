@@ -1,19 +1,35 @@
+/**
+ * 快捷键系统（模块级单例）：
+ * - DEFS 定义全部快捷键（默认绑定、生效目标、分类、i18n 描述键）
+ * - 用户自定义绑定存 localStorage["md-reader-shortcuts"]，只存与默认不同的
+ * - App.vue 的 window keydown 分发和 MarkdownEditor 的 CodeMirror keymap
+ *   都从 getBinding() 取值，所以改绑定两边立即生效
+ * - ShortcutsDialog 的展示/录制/冲突检测也走这里
+ */
+
 import { ref } from "vue";
 import { i18n } from "../i18n";
 
+/** 生效目标：app = 全局键盘分发；editor = 仅 CodeMirror 内；both = 两处；readonly = 仅展示不可改（Esc/Ctrl+滚轮）。 */
 export type ShortcutTarget = "app" | "editor" | "both" | "readonly";
+/** 设置页展示分组：全局 / 编辑器 / 查找。 */
 export type ShortcutCategory = "global" | "editor" | "find";
 
 export interface ShortcutDef {
   id: string;
+  /** 形如 "Ctrl+Shift+F" 的组合串（单字母统一小写归一化后存储）。 */
   defaultBinding: string;
   target: ShortcutTarget;
+  /** 仅编辑态有效（如替换、跳行）。 */
   editOnly?: boolean;
   category: ShortcutCategory;
+  /** i18n 键（shortcuts.<descKey>），设置页与冲突提示用。 */
   descKey: string;
+  /** 固定快捷键，不允许用户改绑（如 Esc、Ctrl+滚轮）。 */
   readonly?: boolean;
 }
 
+// 全部快捷键定义表
 const DEFS: ShortcutDef[] = [
   {
     id: "toggle-mode",
@@ -203,6 +219,7 @@ const DEFS: ShortcutDef[] = [
   },
 ];
 
+/** 归一化组合串：末尾若是单字母则转小写，让 "Ctrl+S" 和 "Ctrl+s" 视为同一个键。 */
 function normalizeComboKey(combo: string): string {
   const parts = combo.split("+");
   const last = parts[parts.length - 1];
@@ -212,6 +229,7 @@ function normalizeComboKey(combo: string): string {
   return parts.join("+");
 }
 
+// id → 默认绑定（归一化后）的映射
 const DEFAULTS: Record<string, string> = {};
 for (const def of DEFS) {
   DEFAULTS[def.id] = normalizeComboKey(def.defaultBinding);
@@ -219,6 +237,7 @@ for (const def of DEFS) {
 
 const STORAGE = "md-reader-shortcuts";
 
+/** 从 localStorage 读用户自定义（损坏数据静默忽略）。 */
 function loadOverrides(): Record<string, string> {
   try {
     const raw = localStorage.getItem(STORAGE);
@@ -229,12 +248,14 @@ function loadOverrides(): Record<string, string> {
   return {};
 }
 
+// 用户改过的绑定（id → 归一化组合串），模块级单例
 const overrides = ref<Record<string, string>>(loadOverrides());
 
 function save() {
   localStorage.setItem(STORAGE, JSON.stringify(overrides.value));
 }
 
+/** 取某快捷键的当前生效绑定（自定义优先，无则默认）。 */
 function getBinding(id: string): string {
   return overrides.value[id] ?? DEFAULTS[id] ?? "";
 }
@@ -243,6 +264,11 @@ function getDef(id: string): ShortcutDef | undefined {
   return DEFS.find((d) => d.id === id);
 }
 
+/**
+ * 设置绑定：先做冲突检测——与其他（非只读、非自身）快捷键的当前生效
+ * 绑定相同则拒绝并返回冲突项名称；改回默认值时删除覆盖记录（保持
+ * localStorage 只存差异）。返回 {ok, conflict?}。
+ */
 function setBinding(
   id: string,
   combo: string
@@ -265,6 +291,7 @@ function setBinding(
   return { ok: true };
 }
 
+/** 恢复单个快捷键为默认。 */
 function resetBinding(id: string) {
   if (!(id in overrides.value)) return;
   const next = { ...overrides.value };
@@ -273,15 +300,18 @@ function resetBinding(id: string) {
   save();
 }
 
+/** 恢复全部默认。 */
 function resetAll() {
   overrides.value = {};
   save();
 }
 
+/** 该快捷键是否被用户自定义过（设置页显示「已自定义」标记）。 */
 function isCustom(id: string): boolean {
   return id in overrides.value;
 }
 
+/** 把键盘事件转成组合串（Ctrl/Meta 统一为 Ctrl，单字母小写）。 */
 function normalizeEvent(e: KeyboardEvent): string {
   const parts: string[] = [];
   if (e.ctrlKey || e.metaKey) parts.push("Ctrl");
@@ -293,6 +323,7 @@ function normalizeEvent(e: KeyboardEvent): string {
   return parts.join("+");
 }
 
+/** 转成 CodeMirror 的键名格式："Ctrl+B" → "Mod-B"（CM 用 Mod 跨平台表示 Cmd/Ctrl）。 */
 function toCodeMirror(combo: string): string {
   return combo
     .split("+")
@@ -300,6 +331,7 @@ function toCodeMirror(combo: string): string {
     .join("-");
 }
 
+/** 展示格式：末尾单字母转大写（"ctrl+s" → "Ctrl+S"）。 */
 function formatBinding(combo: string): string {
   const parts = combo.split("+");
   const last = parts[parts.length - 1];
@@ -311,6 +343,7 @@ function formatBinding(combo: string): string {
 
 const MODIFIER_KEYS = new Set(["Control", "Shift", "Alt", "Meta"]);
 
+/** 录制的组合是否合法：必须含 Ctrl 且以非修饰键结尾。 */
 function isValidCombo(combo: string): boolean {
   if (!combo.includes("Ctrl")) return false;
   const parts = combo.split("+");
@@ -319,6 +352,7 @@ function isValidCombo(combo: string): boolean {
   return true;
 }
 
+/** 是否为修饰键（录制过程中单独按下修饰键不算完成）。 */
 function isModifierKey(key: string): boolean {
   return MODIFIER_KEYS.has(key);
 }

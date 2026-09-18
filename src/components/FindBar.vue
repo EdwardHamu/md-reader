@@ -1,3 +1,7 @@
+<!--
+  页内查找条（悬浮在预览区右上角）：纯 UI 组件，搜索/高亮/跳转逻辑
+  全在 useFindInPage；这里只收关键词并转发 next/prev/close 事件。
+-->
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
@@ -23,11 +27,13 @@ const emit = defineEmits<{
 
 const inputRef = ref<HTMLInputElement | null>(null);
 
+/** 每次输入立即重新搜索（高亮代价可接受，不做防抖）。 */
 function onInput(evt: Event) {
   emit("update:query", (evt.target as HTMLInputElement).value);
   emit("search");
 }
 
+/** Enter/Shift+Enter 跳下一个/上一个，Esc 关闭。 */
 function onKey(evt: KeyboardEvent) {
   if (evt.key === "Enter") {
     evt.preventDefault();
@@ -39,11 +45,13 @@ function onKey(evt: KeyboardEvent) {
   }
 }
 
+/** 切换大小写敏感后需要立即重搜。 */
 function toggleCase() {
   emit("update:caseSensitive", !props.caseSensitive);
   emit("search");
 }
 
+// 打开时聚焦并全选输入框，可直接覆盖上次关键词
 watch(
   () => props.visible,
   async (v) => {

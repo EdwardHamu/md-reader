@@ -1,3 +1,16 @@
+/**
+ * Markdown 渲染核心管线（模块级单例 markdown-it 实例）：
+ *
+ * - renderMarkdown: 源文本 → 净化后的 HTML（front matter 表格 + 正文）
+ * - extractHeadings: 抽取标题树（目录面板用，渲染前就能拿到）
+ * - renderMath / renderMermaid: 渲染后对 DOM 的后处理（KaTeX/Mermaid 均
+ *   懒加载——动态 import，用不到就不进主包；改成静态导入会翻倍主包体积）
+ *
+ * 插件装配：anchor（标题锚点）、footnote、taskLists、emoji、mathPlugin
+ * （自定义，见 mathPlugin.ts）。core ruler 给块级 token 打上
+ * data-source-line，编辑↔预览的滚动同步全靠它。
+ */
+
 import MarkdownIt from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
 import type Renderer from "markdown-it/lib/renderer.mjs";
@@ -16,6 +29,8 @@ const md: MarkdownIt = new MarkdownIt({
   linkify: true,
   typographer: true,
   breaks: false,
+  // 代码块渲染：mermaid 语言留给 renderMermaid 后处理；其余走 hljs 高亮，
+  // 不认识的语言退化为转义纯文本。
   highlight(str: string, lang: string): string {
     if (lang === "mermaid") {
       return `<div class="mermaid-block">${md.utils.escapeHtml(str)}</div>`;
@@ -39,6 +54,7 @@ const md: MarkdownIt = new MarkdownIt({
   },
 });
 
+// 标题锚点：slug 用 encodeURIComponent（中文标题也能生成合法 id）
 md.use(anchor, {
   slugify: (s: string) =>
     encodeURIComponent(String(s).trim().toLowerCase().replace(/\s+/g, "-")),
@@ -53,6 +69,8 @@ md.use(taskLists, { enabled: true, label: true });
 md.use(emoji);
 md.use(mathPlugin);
 
+// 给每个块级 token 记录源码行号（+1 转为 1-based；offset 来自 front matter
+// 的行数，保证 front matter 之后的块行号对得上原文件）
 md.core.ruler.push("source_line_attrs", (state) => {
   const offset = Number((state.env as { sourceLineOffset?: number }).sourceLineOffset || 0);
   for (const token of state.tokens) {
@@ -74,6 +92,8 @@ const defaultLinkOpen =
     return self.renderToken(tokens, idx, options);
   };
 
+// 外链强制新标签页打开 + noopener；站内 .md 链接保持原样
+// （useLinkRewriter 会拦截并转成 loadFile）
 md.renderer.rules.link_open = function (
   tokens: Token[],
   idx: number,
@@ -97,6 +117,7 @@ export interface Heading {
   id: string;
 }
 
+/** YAML front matter 解析结果（raw 原文 / body 去掉头部的正文 / 起始行号）。 */
 interface FrontMatterBlock {
   raw: string;
   body: string;
@@ -105,6 +126,10 @@ interface FrontMatterBlock {
   error: string;
 }
 
+/**
+ * 拆分 YAML front matter：首行必须是 ---（容忍 BOM），到下一个 --- 为止。
+ * 无 front matter 返回 null。YAML 解析失败不致命——记下 error 原样展示。
+ */
 function splitFrontMatter(source: string): FrontMatterBlock | null {
   const normalized = source.startsWith("\ufeff") ? source.slice(1) : source;
   const lines = normalized.split(/\r?\n/);
@@ -134,6 +159,7 @@ function escapeHtml(s: string): string {
   return md.utils.escapeHtml(s);
 }
 
+/** front matter 值 → 展示 HTML：数组渲染成列表，对象 JSON 序列化，标量转义。 */
 function formatFrontMatterValue(value: unknown): string {
   if (value == null) return "";
   if (Array.isArray(value)) {
@@ -146,6 +172,7 @@ function formatFrontMatterValue(value: unknown): string {
   return escapeHtml(String(value));
 }
 
+/** front matter 渲染成键值表格（解析失败时展示 Error + 原文）。 */
 function renderFrontMatter(block: FrontMatterBlock): string {
   const rows: string[] = [];
   if (block.error) {
@@ -165,6 +192,7 @@ function renderFrontMatter(block: FrontMatterBlock): string {
   return `<section class="front-matter" data-source-line="1"><div class="front-matter-title">YAML Front Matter</div><table><tbody>${rows.join("")}</tbody></table></section>`;
 }
 
+/** 抽取标题树（目录面板数据源）。锚点 id 复用 anchor 插件的 slug 规则。 */
 export function extractHeadings(source: string): Heading[] {
   const block = splitFrontMatter(source);
   const body = block ? block.body : source;
@@ -184,6 +212,10 @@ export function extractHeadings(source: string): Heading[] {
   return headings;
 }
 
+/**
+ * 源文本 → HTML。front matter 单独渲染成表格，正文走 markdown-it，
+ * 最后 DOMPurify 净化（白名单放行 target/data-math/data-source-line）。
+ */
 export function renderMarkdown(source: string): string {
   const block = splitFrontMatter(source);
   const body = block ? block.body : source;
@@ -195,6 +227,7 @@ export function renderMarkdown(source: string): string {
   });
 }
 
+// KaTeX 懒加载（单次加载后复用同一 Promise）
 let katexLoading: Promise<any> | null = null;
 async function loadKatex() {
   if (!katexLoading) {
@@ -207,6 +240,7 @@ async function loadKatex() {
   return katexLoading;
 }
 
+// Mermaid 懒加载（同上）
 let mermaidLoading: Promise<any> | null = null;
 async function loadMermaid() {
   if (!mermaidLoading) {
@@ -218,6 +252,7 @@ async function loadMermaid() {
   return mermaidLoading;
 }
 
+/** 按当前主题初始化 Mermaid（主题切换后需 force 重渲染）。 */
 function configureMermaid(mermaid: any): void {
   const isDark = document.documentElement.dataset.theme === "dark";
   mermaid.initialize({
@@ -229,6 +264,7 @@ function configureMermaid(mermaid: any): void {
   });
 }
 
+/** KaTeX 后处理：把 .math-inline/.math-block 占位元素渲染成公式。 */
 export async function renderMath(container: HTMLElement): Promise<void> {
   const inline = container.querySelectorAll<HTMLElement>(".math-inline");
   const block = container.querySelectorAll<HTMLElement>(".math-block");
@@ -258,6 +294,12 @@ function toXmlSafeSvg(svg: string): string {
   return svg.replace(/<br\s*\/?>/gi, "<br/>").replace(/&nbsp;/gi, "&#160;");
 }
 
+/**
+ * Mermaid SVG 净化：剥离 script 与事件属性/javascript: 链接。
+ * 解析策略：先按 XML 解析；Chromium 失败时根元素是 <html> 包着
+ * <parsererror>（要全局查找），此时退回 HTML 解析再序列化成良构 XML。
+ * 返回空串表示完全无法解析（调用方保持占位不变）。
+ */
 function sanitizeMermaidSvg(svg: string): string {
   const parser = new globalThis.DOMParser();
   const xml = parser.parseFromString(toXmlSafeSvg(svg), "image/svg+xml");
@@ -294,6 +336,13 @@ function sanitizeMermaidSvg(svg: string): string {
 }
 
 let mermaidIdCounter = 0;
+/**
+ * Mermaid 后处理：把 .mermaid-block 占位渲染成 SVG。
+ * - 原始代码存 dataset.mermaidSrc，主题切换 force 重渲染时用（innerHTML
+ *   已被 SVG 覆盖）
+ * - 默认跳过已渲染的块（mermaid-rendered 类标记）；force=true 全部重来
+ * - 渲染失败展示错误文本（不中断其他块）
+ */
 export async function renderMermaid(
   container: HTMLElement,
   force = false

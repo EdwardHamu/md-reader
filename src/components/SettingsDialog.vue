@@ -1,3 +1,9 @@
+<!--
+  设置对话框：两个标签页——「阅读」（阅读区/编辑器排版、背景色预设、更新
+  检查、pandoc 模板、文件关联、快捷键入口）与「PDF 导出」（24 套样式模板、
+  字体/颜色/页面参数 + iframe 实时预览，逻辑在 usePdfStyle / usePdfPreview）。
+  阅读设置项的持久化在 useReadingSettings（plugin-store），本组件只做 UI。
+-->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
@@ -14,6 +20,7 @@ import {
 } from "../composables/useExport";
 import ShortcutsDialog from "./ShortcutsDialog.vue";
 
+// 版本更新检查：走 GitHub Releases API（latest），不引入更新器。
 const RELEASE_API =
   "https://api.github.com/repos/Neilooo/md-reader/releases/latest";
 const RELEASE_LATEST_URL =
@@ -27,9 +34,11 @@ interface LatestRelease {
 }
 
 const { t } = useI18n();
+// 文件关联注册（Windows 绿色版手动触发，见后端 register_file_associations）
 const associationBusy = ref(false);
 const associationStatus = ref<"" | "success" | "error">("");
 const associationMessage = ref("");
+// 版本更新检查状态
 const currentVersion = ref("");
 const updateStatus = ref<UpdateStatus>("idle");
 const updateMessage = ref("");
@@ -42,10 +51,12 @@ const updateStatusClass = computed(() => ({
   error: updateStatus.value === "error",
 }));
 
+/** 去掉 tag 前缀的 "v"，统一成裸版本号再比较。 */
 function normalizeVersion(version: string): string {
   return version.trim().replace(/^v/i, "");
 }
 
+/** 解析 "1.2.3-beta" 形态：主/次/补丁 + 预发布后缀。 */
 function parseVersion(version: string) {
   const [core, pre = ""] = normalizeVersion(version).split("-", 2);
   const nums = core.split(".").map((n) => Number.parseInt(n, 10) || 0);
@@ -57,6 +68,7 @@ function parseVersion(version: string) {
   };
 }
 
+/** 语义化版本比较：返回正/零/负。无预发布后缀的版本 > 有后缀的（1.0 > 1.0-rc1）。 */
 function compareVersions(a: string, b: string): number {
   const av = parseVersion(a);
   const bv = parseVersion(b);
@@ -78,6 +90,7 @@ async function loadCurrentVersion() {
   }
 }
 
+/** 请求 GitHub Releases API，8s 超时（不翻墙可能超时，必须可中止）。 */
 async function fetchLatestRelease(): Promise<LatestRelease> {
   const controller = new globalThis.AbortController();
   const timer = window.setTimeout(() => controller.abort(), 8000);
@@ -93,6 +106,7 @@ async function fetchLatestRelease(): Promise<LatestRelease> {
   }
 }
 
+/** 检查更新：比较远端 tag 与本地版本，结果写入状态供模板展示。 */
 async function checkForUpdates() {
   updateStatus.value = "checking";
   updateMessage.value = "";
@@ -130,8 +144,12 @@ async function openReleasePage() {
   await openUrl(latestReleaseUrl.value || RELEASE_LATEST_URL);
 }
 
+// ---- pandoc DOCX 参考模板（DOCX 导出的样式基准） ----
+// 注意 ref 只在组件创建时读一次缓存；真正的选择结果立即写回 useExport
+// 的模块级缓存，导出时从那边取，与对话框是否开着无关。
 const pandocRefDoc = ref(getCachedPandocRefDoc() ?? "");
 
+/** 文件选择器挑一个 .docx 作为 pandoc --reference-doc。 */
 async function pickPandocRefDoc() {
   const selected = await open({
     multiple: false,
@@ -153,7 +171,9 @@ onMounted(loadCurrentVersion);
 const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
+// 快捷键说明弹窗（叠加在本对话框之上，关闭设置时一并收起）
 const showShortcuts = ref(false);
+// 当前激活的设置标签页：reading / pdf
 const settingsTab = ref<"reading" | "pdf">("reading");
 watch(
   () => props.visible,
@@ -162,6 +182,7 @@ watch(
   }
 );
 
+// ---- 阅读设置（排版项的读取/写入全部经 useReadingSettings，含持久化） ----
 const {
   settings,
   fontOptions,
@@ -180,9 +201,10 @@ const {
 
 interface ReaderBgPreset {
   i18nKey: string;
-  value: string | null;
+  value: string | null; // null = 恢复默认背景（跟随主题）
 }
 
+// 亮/暗主题各自的阅读区背景色预设（value 为 null 表示默认）
 const lightBgPresets: ReaderBgPreset[] = [
   { i18nKey: "settings.presetDefaultLight", value: null },
   { i18nKey: "settings.presetPaper", value: "#f5f0e6" },
@@ -196,6 +218,7 @@ const darkBgPresets: ReaderBgPreset[] = [
   { i18nKey: "settings.presetDarkWarm", value: "#151515" },
 ];
 
+// 拾色器回显值：未自定义时给主题默认色（拾色器不接受空值）
 const lightBgDisplay = computed(() => settings.value.readerBgLight ?? "#ffffff");
 const darkBgDisplay = computed(() => settings.value.readerBgDark ?? "#0d1117");
 
@@ -207,6 +230,7 @@ function onDarkBgInput(e: Event) {
   setReaderBgDark((e.target as HTMLInputElement).value);
 }
 
+/** 十六进制输入框：空 = 清除自定义；非法格式回填当前值（不打断输入）。 */
 function onLightBgHex(e: Event) {
   const el = e.target as HTMLInputElement;
   const v = el.value.trim();
@@ -235,6 +259,7 @@ function onDarkBgHex(e: Event) {
   }
 }
 
+// ---- PDF 导出样式（模板/字体/颜色/页面参数，见 usePdfStyle） ----
 const {
   settings: pdfStyle,
   templates: pdfTemplates,
@@ -247,6 +272,7 @@ const {
   reset: resetPdfStyle,
 } = usePdfStyle();
 
+// 模板 id → 模板对象映射，模板下拉框按分类分组渲染时按 id 取名
 const pdfTemplateMap = computed<Record<string, (typeof pdfTemplates)[number]>>(
   () => {
     const m: Record<string, (typeof pdfTemplates)[number]> = {};
@@ -255,6 +281,7 @@ const pdfTemplateMap = computed<Record<string, (typeof pdfTemplates)[number]>>(
   }
 );
 
+// PDF 样式实时预览（iframe srcdoc）：compareMode 时并排亮/暗两份
 const { previewHtml, previewLight, previewDark, sampleText, compareMode } =
   usePdfPreview();
 
@@ -263,8 +290,10 @@ interface SystemFont {
   monospaced: boolean;
 }
 
+// 系统字体列表（阅读/编辑器字体的自定义选项），首次打开设置时懒加载
 const systemFonts = ref<string[]>([]);
 
+/** 经 system-fonts 插件拉取系统字体，去重 + 过滤隐藏项 + 按中文 locale 排序。 */
 async function loadSystemFonts() {
   if (systemFonts.value.length) return;
   try {
@@ -281,10 +310,11 @@ async function loadSystemFonts() {
       .map((f) => f.name)
       .sort((a, b) => a.localeCompare(b, "zh-CN"));
   } catch {
-    /* ignore */
+    /* ignore: 字体列表拉不到就用内置选项 */
   }
 }
 
+// 每次打开设置对话框才加载字体（避免启动时无谓的 IPC 往返）
 watch(
   () => props.visible,
   (v) => {
@@ -292,6 +322,7 @@ watch(
   }
 );
 
+/** 调用后端注册 Windows 文件关联（绿色版 .md 双击打开）。 */
 async function registerAssociations() {
   associationBusy.value = true;
   associationStatus.value = "";
@@ -336,7 +367,9 @@ async function registerAssociations() {
         </button>
       </div>
 
+      <!-- ============ 「阅读」标签页 ============ -->
       <div v-show="settingsTab === 'reading'">
+        <!-- 阅读区自定义背景色：亮/暗主题分别保存，含预设与恢复默认 -->
         <div class="reader-bg-block">
           <div class="reader-bg-title">{{ t("settings.readerBg") }}</div>
 
@@ -417,6 +450,7 @@ async function registerAssociations() {
           </div>
         </div>
 
+        <!-- 排版项：字号 / 行高 / 页宽 / 正文字体（含系统字体）/ 目录位置 -->
         <div class="row">
           <label>{{ t("settings.fontSize") }}</label>
           <input
@@ -530,6 +564,7 @@ async function registerAssociations() {
           </select>
         </div>
 
+        <!-- 以下为操作卡片：更新检查 / pandoc 模板 / 文件关联 / 快捷键 -->
         <div class="association">
           <div>
             <div class="association-title">{{ t("settings.updateCheck") }}</div>
@@ -634,10 +669,12 @@ async function registerAssociations() {
         </div>
       </div>
 
+      <!-- ============ 「PDF 导出」标签页 ============ -->
       <div v-show="settingsTab === 'pdf'" class="section">
         <div class="section-title">{{ t("pdfStyle.title") }}</div>
         <div class="association-hint">{{ t("pdfStyle.previewNote") }}</div>
 
+        <!-- 实时预览：可切换亮/暗并排对比；预览文本可自定义 -->
         <div class="preview-label">
           {{ t("pdfStyle.preview") }}
           <button
@@ -683,6 +720,7 @@ async function registerAssociations() {
           title="PDF style preview"
         ></iframe>
 
+        <!-- 模板按三个分类分组（简约/经典/个性），选中 custom 时单独成组 -->
         <div class="row">
           <label>{{ t("pdfStyle.template") }}</label>
           <select
@@ -839,6 +877,7 @@ async function registerAssociations() {
           </div>
         </div>
 
+        <!-- 自定义颜色五件套：正文/标题/链接/代码块背景/页面背景 -->
         <div class="row">
           <label>{{ t("pdfStyle.textColor") }}</label>
           <input
@@ -912,6 +951,7 @@ async function registerAssociations() {
           <span class="value mono">{{ pdfStyle.bgColor }}</span>
         </div>
 
+        <!-- 页面参数：纸张尺寸 + 横竖向 + 页边距 -->
         <div class="row">
           <label>{{ t("pdfStyle.pageSize") }}</label>
           <select

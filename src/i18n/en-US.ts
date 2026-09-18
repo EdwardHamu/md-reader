@@ -1,3 +1,8 @@
+/**
+ * English strings. Structure mirrors zh-CN.ts and is type-checked against
+ * its MessageSchema, so a missing key is a compile error. When adding a key,
+ * add it to zh-CN first, then here. Group comments live in zh-CN.ts.
+ */
 import type { MessageSchema } from "./zh-CN";
 
 const enUS = {

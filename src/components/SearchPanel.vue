@@ -1,3 +1,8 @@
+<!--
+  全局搜索面板（左侧栏"搜索"页）：跨文件搜索根目录下所有 md，
+  调 Rust 端 search_in_files；结果按文件分组展示，点击命中项
+  打开文件并跳转到对应行。输入 220ms 防抖自动搜索，Enter 立即搜。
+-->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
@@ -22,6 +27,7 @@ const results = ref<SearchMatch[]>([]);
 const error = ref("");
 const inputRef = ref<HTMLInputElement | null>(null);
 
+/** 结果按相对路径分组：[{ rel, matches }]，组内保持后端返回顺序（即行号序）。 */
 const grouped = computed(() => {
   const map: Record<string, SearchMatch[]> = {};
   for (const m of results.value) {
@@ -30,6 +36,7 @@ const grouped = computed(() => {
   return Object.entries(map).map(([rel, matches]) => ({ rel, matches }));
 });
 
+/** 执行搜索（500 条上限，与后端约定一致；超限由后端截断）。 */
 async function run() {
   error.value = "";
   if (!props.rootDir) {
@@ -58,6 +65,7 @@ async function run() {
   }
 }
 
+/** 输入防抖：停止输入 220ms 后自动搜索，避免每个字符都打到后端。 */
 let debounceTimer: number | null = null;
 function onInput() {
   if (debounceTimer) clearTimeout(debounceTimer);
@@ -69,6 +77,10 @@ function onKey(evt: KeyboardEvent) {
   else if (evt.key === "Enter") run();
 }
 
+/**
+ * 生成命中预览 HTML：先转义正则元字符，命中片段包 <mark>。
+ * 全程先 escapeHtml 再拼 <mark>，避免文件内容注入 HTML。
+ */
 function highlight(text: string, q: string): string {
   if (!q) return escapeHtml(text);
   const flags = caseSensitive.value ? "g" : "gi";
@@ -93,6 +105,7 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
+// 面板可见时聚焦并全选输入框，方便直接覆盖上次关键词
 watch(
   () => props.visible,
   async (v) => {
@@ -127,6 +140,7 @@ watch(
       </button>
       <button class="ic" @click="emit('close')" :title="t('find.close') + ' (Esc)'">✕</button>
     </div>
+    <!-- 状态行：搜索中 / 出错 / 无命中 / 命中统计 -->
     <div class="status">
       <span v-if="loading">{{ t("search.searching") }}</span>
       <span v-else-if="error" class="error">{{ error }}</span>
@@ -136,6 +150,7 @@ watch(
       </span>
       <span v-else class="muted">{{ t("search.typeToSearch") }}</span>
     </div>
+    <!-- 结果列表：组标题吸顶，v-html 只含 escapeHtml 过的文本 + <mark> -->
     <div class="results">
       <div v-for="g in grouped" :key="g.rel" class="group">
         <div class="group-title" :title="g.rel">{{ g.rel }}</div>

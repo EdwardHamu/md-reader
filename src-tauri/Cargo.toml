@@ -11,12 +11,16 @@ rust-version = "1.77"
 
 [lib]
 name = "md_reader_lib"
+# 只能是 rlib：加 staticlib/cdylib 会让 #[tauri::command] 宏展开两次直接
+# 构建失败（E0255 宏重导入冲突），这是实测踩过的坑，别改。
 crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# protocol-asset 必须开：tauri.conf.json 启用了 assetProtocol，两边不匹配
+# 会报 "allowlist does not match" 构建失败。
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
@@ -33,6 +37,9 @@ notify = "6"
 notify-debouncer-mini = "0.4"
 
 [profile.release]
+# panic = abort：任何 panic 都会立即退出进程（无 unwind）。所以后端代码里
+# 任何可能 panic 的点（unwrap / state() / 锁中毒）都要当成崩溃对待——
+# #33 的 macOS 双击闪退就是这么来的。
 panic = "abort"
 codegen-units = 1
 lto = true

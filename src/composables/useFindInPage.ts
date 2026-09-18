@@ -1,5 +1,16 @@
+/**
+ * 页内查找（Ctrl+F）：对渲染后的 DOM 做纯前端文本匹配。
+ * 实现方式是 TreeWalker 收集文本节点，把命中片段用 span 包裹加高亮；
+ * 不依赖 window.find（WebView 不可用/不可控）。
+ *
+ * 注意：collectTextNodes 里跳过了 script/style/公式/Mermaid/已有高亮，
+ * 以后新增带原始文本的渲染组件必须把它的类名加进那个 closest 选择器，
+ * 否则查找会错误地命中源码文本。
+ */
+
 import { ref, computed, Ref } from "vue";
 
+/** 高亮 span 的类名；HL_ACTIVE 标记当前跳转目标。 */
 const HL = "find-highlight";
 const HL_ACTIVE = "find-highlight-active";
 
@@ -7,10 +18,12 @@ export function useFindInPage(bodyRef: Ref<HTMLElement | null>) {
   const visible = ref(false);
   const query = ref("");
   const caseSensitive = ref(false);
+  /** 全部命中高亮 span，按文档顺序排列。 */
   const matches = ref<HTMLElement[]>([]);
   const activeIndex = ref(0);
   const total = computed(() => matches.value.length);
 
+  /** 撤销高亮：把 span 的子节点搬回原父节点再移除 span，最后 normalize 合并被拆散的文本节点。 */
   function clearHighlights() {
     const body = bodyRef.value;
     if (!body) return;
@@ -25,6 +38,7 @@ export function useFindInPage(bodyRef: Ref<HTMLElement | null>) {
     activeIndex.value = 0;
   }
 
+  /** 收集可搜索的文本节点，跳过不可搜索的渲染组件（见文件头说明）。 */
   function collectTextNodes(): Text[] {
     const body = bodyRef.value;
     if (!body) return [];
@@ -46,6 +60,7 @@ export function useFindInPage(bodyRef: Ref<HTMLElement | null>) {
     return nodes;
   }
 
+  /** 用 Range.surroundContents 把 [start, end) 文本包进高亮 span。 */
   function wrapRange(node: Text, start: number, end: number): HTMLElement {
     const range = document.createRange();
     range.setStart(node, start);
@@ -56,6 +71,12 @@ export function useFindInPage(bodyRef: Ref<HTMLElement | null>) {
     return span;
   }
 
+  /**
+   * 执行搜索：逐节点 indexOf 找出全部命中偏移。
+   * 同一节点内倒序包裹（positions 先按偏移降序排），这样前面的偏移
+   * 不会因后面已经插入了 span 节点而失效；跨节点则最后统一按
+   * 文档位置排序，保证 next/prev 的顺序和视觉顺序一致。
+   */
   function search() {
     clearHighlights();
     const q = query.value;
@@ -96,6 +117,7 @@ export function useFindInPage(bodyRef: Ref<HTMLElement | null>) {
     }
   }
 
+  /** 切换 activeIndex 对应 span 的高亮态并滚动到可视中央。 */
   function highlightActive() {
     matches.value.forEach((el, i) => {
       el.classList.toggle(HL_ACTIVE, i === activeIndex.value);
@@ -105,6 +127,7 @@ export function useFindInPage(bodyRef: Ref<HTMLElement | null>) {
       active.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
+  /** 环形导航：越界回到开头/结尾。 */
   function next() {
     if (!total.value) return;
     activeIndex.value = (activeIndex.value + 1) % total.value;
@@ -121,11 +144,13 @@ export function useFindInPage(bodyRef: Ref<HTMLElement | null>) {
     visible.value = true;
   }
 
+  /** 关闭查找栏并清掉所有高亮。 */
   function close() {
     visible.value = false;
     clearHighlights();
   }
 
+  /** 清空关键词（切换文档等场景）。 */
   function reset() {
     query.value = "";
     clearHighlights();

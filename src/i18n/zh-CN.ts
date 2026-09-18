@@ -1,4 +1,14 @@
+/**
+ * 简体中文文案表。分组与使用方对应：app/toolbar（App.vue 外壳）、
+ * find（FindBar）、search（SearchPanel）、settings（SettingsDialog 阅读页）、
+ * export（导出菜单与结果提示）、editor（编辑与未保存对话框）、
+ * toc（TocPanel）、tabs（TabBar）、pdfStyle（SettingsDialog PDF 页）、
+ * errors（通用错误）、shortcuts（ShortcutsDialog）。
+ * 本文件同时是 MessageSchema 的类型来源：新增 key 必须先加这里，
+ * en-US.ts 会按类型检查强制同步。
+ */
 const zhCN = {
+  // ---- 应用外壳 / 工具栏（App.vue）----
   app: {
     file: "文件",
     folder: "文件夹",
@@ -24,6 +34,7 @@ const zhCN = {
     clearRecent: "清除列表",
     openContainingFolder: "打开文件所在文件夹",
   },
+  // ---- 工具栏按钮 ----
   toolbar: {
     new: "新建",
     find: "查找",
@@ -34,6 +45,7 @@ const zhCN = {
     outline: "大纲",
     print: "打印 / 系统 PDF",
   },
+  // ---- 页内查找（FindBar）----
   find: {
     placeholder: "在当前文档查找",
     caseSensitive: "区分大小写",
@@ -41,6 +53,7 @@ const zhCN = {
     next: "下一个",
     close: "关闭",
   },
+  // ---- 全文搜索（SearchPanel）----
   search: {
     placeholder: "全文搜索（当前文件夹）",
     searching: "搜索中…",
@@ -50,6 +63,7 @@ const zhCN = {
     files: "个文件",
     openFolderFirst: "请先打开一个文件夹",
   },
+  // ---- 设置对话框 · 阅读页（SettingsDialog）----
   settings: {
     title: "阅读设置",
     tabReading: "阅读设置",
@@ -104,6 +118,7 @@ const zhCN = {
     associationFailed: "注册文件关联失败",
     done: "完成",
   },
+  // ---- 导出菜单与导出结果提示（useExport / App.vue 导出菜单）----
   export: {
     html: "导出 HTML",
     htmlHint: "自包含 · 含图片/公式/图表",
@@ -137,6 +152,7 @@ const zhCN = {
     dialogDocx: "导出为 DOCX",
     wordDocument: "Word 文档",
   },
+  // ---- 编辑与未保存/外部修改对话框（MarkdownEditor / UnsavedChangesDialog）----
   editor: {
     edit: "编辑",
     preview: "预览",
@@ -160,12 +176,14 @@ const zhCN = {
     created: "已创建",
     createFailed: "创建失败",
   },
+  // ---- 大纲面板（TocPanel）----
   toc: {
     title: "大纲",
     empty: "（无标题）",
     expandAll: "全部展开",
     collapseAll: "全部折叠",
   },
+  // ---- 标签页右键菜单（TabBar）----
   tabs: {
     close: "关闭",
     closeOthers: "关闭其他",
@@ -175,6 +193,7 @@ const zhCN = {
     copiedPath: "路径已复制",
     copyFailed: "复制失败",
   },
+  // ---- PDF 导出样式页（SettingsDialog PDF 页；tpl 为 24 套配色模板名）----
   pdfStyle: {
     title: "PDF 导出样式",
     cat: {
@@ -239,10 +258,12 @@ const zhCN = {
       oneDark: "One Dark",
     },
   },
+  // ---- 通用错误提示 ----
   errors: {
     readFailed: "读取失败",
     fileExists: "文件已存在，请换个文件名",
   },
+  // ---- 快捷键设置（ShortcutsDialog；descKey 对应 useShortcuts 的 defs）----
   shortcuts: {
     title: "快捷键",
     hint: "查看和自定义所有快捷键",

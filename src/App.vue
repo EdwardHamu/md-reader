@@ -1,3 +1,9 @@
+<!--
+  应用根组件：整体布局（工具栏 / 左侧文件树·搜索·大纲 / 阅读区 / 右侧目录 /
+  标签栏 / 各弹层）与全局事件（键盘分发、拖放、外部打开事件、窗口关闭保护）。
+  状态刻意拆在 composables 里（见各 useXxx）；本组件持有「组合层」逻辑：
+  标签生命周期、保存/关闭确认流、导出编排、编辑↔预览切换的滚动位置同步。
+-->
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -40,12 +46,14 @@ import { useTheme } from "./composables/useTheme.ts";
 
 const { t, locale } = useI18n();
 
+/** 工具栏语言切换按钮：中↔英循环，选择立即持久化。 */
 function toggleLocale() {
   const next = locale.value === "zh-CN" ? "en-US" : "zh-CN";
   locale.value = next;
   persistLocale(next as AppLocale);
 }
 
+// ---- 文件树 / 监听 / 历史 / 阅读设置 / 快捷键 / 标签（各 composable 单例） ----
 const {
   rootDir,
   tree,
@@ -66,6 +74,7 @@ const {
   setEditorFontSize,
 } = useReadingSettings();
 const { getBinding, normalizeEvent, formatBinding } = useShortcuts();
+/** 快捷键提示后缀，如 " (Ctrl+S)"，拼在菜单/按钮 title 上。 */
 function shortcutSuffix(id: string): string {
   return " (" + formatBinding(getBinding(id)) + ")";
 }
@@ -83,6 +92,7 @@ const {
 
 const errorMsg = ref<string>("");
 const saving = ref(false);
+// 编辑器组件引用（openSearch/goToLine 等暴露给键盘分发的接口）
 const editorRef = ref<{
   focus: () => void;
   openSearch: () => void;
@@ -92,6 +102,7 @@ const editorRef = ref<{
   scrollToLine: (line: number) => void;
 } | null>(null);
 
+// ---- 未保存/外部变更对话框（promise-based：askUnsaved 挂起调用方直到用户选择） ----
 type UnsavedChoice = "save" | "discard" | "cancel";
 type UnsavedDialogMode = "unsaved" | "external";
 const showUnsavedDialog = ref(false);
@@ -99,6 +110,9 @@ const unsavedDialogMode = ref<UnsavedDialogMode>("unsaved");
 const dialogTab = ref<Tab | null>(null);
 let unsavedResolve: ((choice: UnsavedChoice) => void) | null = null;
 
+// ---- watcher 抑制表：自己写文件触发的变更事件不该触发重载对话框 ----
+// 保存/新建前后 addSuppress 对应路径，1 秒后自动解除（等 watcher 事件过去）。
+// 按路径归一化（反斜杠→正斜杠 + 小写）存取，兼容不同来源的大小写差异。
 const suppressed = new Set<string>();
 function addSuppress(p: string) {
   suppressed.add(p.replace(/\\/g, "/").toLowerCase());
@@ -113,6 +127,7 @@ function scheduleSuppressClear(p: string) {
   window.setTimeout(() => clearSuppress(p), 1000);
 }
 
+// 面板显隐（localStorage 记忆）与左侧模式：files / search / outline
 const showFileTree = ref<boolean>(
   localStorage.getItem("md-reader-show-tree") !== "0"
 );
@@ -123,12 +138,16 @@ const showSettings = ref(false);
 const leftMode = ref<"files" | "search" | "outline">("files");
 const tocOnLeft = computed(() => readingSettings.value.tocPosition === "left");
 const showExportMenu = ref(false);
+// 导出进行中状态与结果提示（toast）
 const exportBusy = ref(false);
 const exportToast = ref("");
+// 外部依赖探测结果（设置页/导出前展示）
 const pandocInfo = ref<PandocInfo | null>(null);
 const pdfEnginePath = ref<string | null>(null);
+// 强制重渲染计数：主题切换后 +1 让 Mermaid/KaTeX 按新主题重画
 const renderTick = ref(0);
 
+// 左右分栏宽度（拖拽调整，localStorage 记忆；右侧 inverse 反向计算）
 const { width: leftWidth, startResize: resizeLeft } = useResizable(
   "md-reader-left-w",
   260
@@ -141,11 +160,14 @@ const { width: rightWidth, startResize: resizeRight } = useResizable(
 
 const viewerEl = ref<HTMLElement | null>(null);
 const markdownRef = ref<{ root: HTMLElement | null } | null>(null);
+// 当前渲染根 DOM（导出/查找/滚动同步都以它为操作对象）
 const bodyRef = computed(() => markdownRef.value?.root ?? null);
 
 const { activeId, onScroll, jumpTo } = useScrollSpy(viewerEl, bodyRef);
 const find = useFindInPage(bodyRef);
 
+// ---- 活动标签的只读投影：Tab 状态的唯一真身在 useTabs 的 activeTab ----
+// 注意这些是 computed，写入要走 activeTab.value.* 或各 save/draft 辅助函数。
 const currentFile = computed(() => activeTab.value?.path ?? "");
 const draftContent = computed(() => activeTab.value?.draftContent ?? "");
 const isDirty = computed(() => activeTab.value?.isDirty ?? false);
@@ -167,6 +189,7 @@ const displayFileName = computed(() =>
 const canExport = computed(() => Boolean(activeTab.value?.draftContent));
 const hasActiveFile = computed(() => Boolean(activeTab.value?.path));
 
+/** 在资源管理器中显示该文件。 */
 async function openInExplorer(path: string) {
   try {
     await revealItemInDir(path);
@@ -175,6 +198,7 @@ async function openInExplorer(path: string) {
   }
 }
 
+/** 复制路径到剪贴板；非安全上下文降级为隐藏 textarea + execCommand。 */
 async function copyPath(path: string) {
   if (!path) return;
   try {
@@ -212,6 +236,11 @@ const unsavedDialogMessage = computed(() =>
 let headingTimer: number | null = null;
 let appWindow: import("@tauri-apps/api/window").Window | null = null;
 
+/**
+ * 弹出未保存/外部变更确认框，返回 Promise 在用户点选后 resolve。
+ * closeTab / confirmCloseAll / onFilesChanged 等调用方 await 它实现
+ * 「先确认再动作」的流程。同一时刻只允许一个在飞；第二个调用直接 cancel。
+ */
 function askUnsaved(tab: Tab, mode: UnsavedDialogMode): Promise<UnsavedChoice> {
   if (unsavedResolve) {
     // A dialog is already in flight; don't clobber its resolver.
@@ -225,6 +254,7 @@ function askUnsaved(tab: Tab, mode: UnsavedDialogMode): Promise<UnsavedChoice> {
   });
 }
 
+/** 对话框按钮回调统一走这里：收起弹窗并把选择交回挂起的调用方。 */
 function resolveDialog(choice: UnsavedChoice) {
   showUnsavedDialog.value = false;
   const resolve = unsavedResolve;
@@ -233,6 +263,8 @@ function resolveDialog(choice: UnsavedChoice) {
   resolve?.(choice);
 }
 
+/** 把磁盘内容读进标签（新开或重载共用）：重置草稿/脏标记/标题，并按
+ *  hash 或历史滚动位置安排渲染后的初始滚动。 */
 async function readFileIntoTab(tab: Tab, path: string, hash = "") {
   const text = await readTextFile(path);
   tab.path = path;
@@ -249,6 +281,10 @@ async function readFileIntoTab(tab: Tab, path: string, hash = "") {
   errorMsg.value = "";
 }
 
+/**
+ * 打开文件（核心入口）：已被某标签打开则只激活它并按 hash/原位置滚动；
+ * 否则新建标签读入。切换前先保存当前标签的滚动位置。
+ */
 async function loadFile(path: string, hash = "") {
   const existing = findTabByPath(path);
   if (existing) {
@@ -277,6 +313,7 @@ async function loadFile(path: string, hash = "") {
   activateTab(tab.id);
 }
 
+/** 无条件从磁盘重载标签内容（脏草稿已被放弃或不存在时）。 */
 async function forceReloadTab(tab: Tab) {
   try {
     const text = await readTextFile(tab.path);
@@ -295,6 +332,7 @@ async function forceReloadTab(tab: Tab) {
   }
 }
 
+/** 切换标签：先把出向标签的滚动存回它自己，再安排入向标签恢复。 */
 function switchToTab(id: string) {
   if (id === activeTabId.value) return;
   saveCurrentScroll();
@@ -318,6 +356,7 @@ function findPrevTab(): string {
   return tabs.value[(idx - 1 + tabs.value.length) % tabs.value.length].id;
 }
 
+/** 工具栏刷新：刷新文件树；正在编辑时记住编辑器可视行以便回来时对位。 */
 async function handleRefresh() {
   saveCurrentScroll();
   if (isEditing.value && editorRef.value && activeTab.value) {
@@ -332,6 +371,10 @@ async function handleRefresh() {
   }
 }
 
+/**
+ * 保存标签到磁盘（Ctrl+S 核心）。写文件前后抑制 watcher 一秒，
+ * 防止自己的写入触发「文件已变更」对话框。返回是否成功。
+ */
 async function saveTab(tab: Tab): Promise<boolean> {
   if (!tab.path || saving.value) return false;
   saving.value = true;
@@ -360,6 +403,7 @@ async function saveCurrentFile(): Promise<boolean> {
   return saveTab(tab);
 }
 
+/** 另存为：写新路径、标签改指向新文件，并记入最近/持久化标签列表。 */
 async function saveAsCurrentFile(): Promise<boolean> {
   const tab = activeTab.value;
   if (!tab || saving.value) return false;
@@ -394,6 +438,7 @@ async function saveAsCurrentFile(): Promise<boolean> {
   }
 }
 
+/** 关闭单个标签：脏标签先弹确认（cancel 则不动，save 失败也不关）。 */
 async function closeTab(id: string) {
   const tab = tabs.value.find((x) => x.id === id);
   if (!tab) return;
@@ -409,6 +454,7 @@ async function closeTab(id: string) {
   removeTab(id);
 }
 
+/** 逐个确认所有脏标签（关窗口/关闭全部前）。任一 cancel 即中止。 */
 async function confirmCloseAll(): Promise<boolean> {
   for (const tab of tabs.value.filter((x) => x.isDirty)) {
     activateTab(tab.id);
@@ -434,6 +480,7 @@ function onDialogCancel() {
   resolveDialog("cancel");
 }
 
+/** 关闭其他标签：逐个确认脏标签（cancel 中止），再统一移除并回到保留标签。 */
 async function closeOthers(id: string) {
   const keep = tabs.value.find((x) => x.id === id);
   if (!keep || tabs.value.length <= 1) return;
@@ -459,6 +506,7 @@ async function closeAll() {
   for (const tab of [...tabs.value]) removeTab(tab.id);
 }
 
+/** 标签右键「刷新」：脏时弹外部变更确认（重新加载=放弃编辑）。 */
 async function refreshTab(id: string) {
   const tab = tabs.value.find((x) => x.id === id);
   if (!tab) return;
@@ -476,6 +524,10 @@ async function refreshTab(id: string) {
   await forceReloadTab(tab);
 }
 
+/**
+ * 预览区当前对应的源码行：从上往下找最后一个 top 距容器顶 ≤16px 的
+ * `[data-source-line]` 块（即当前视口顶部的块）。编辑↔预览切换时用它对位。
+ */
 function getPreviewTopSourceLine(): number {
   const container = viewerEl.value;
   const body = bodyRef.value;
@@ -498,6 +550,7 @@ function getPreviewTopSourceLine(): number {
   return current;
 }
 
+/** 把预览区滚到指定源码行对应的块（找 line 的最大不超过值）。 */
 function scrollPreviewToSourceLine(line: number) {
   const container = viewerEl.value;
   const body = bodyRef.value;
@@ -522,16 +575,19 @@ function scrollPreviewToSourceLine(line: number) {
     8;
 }
 
+/** 编辑↔预览切换：以源码行为锚双向保持滚动位置。 */
 function toggleEditorMode() {
   const tab = activeTab.value;
   if (!tab) return;
   if (tab.isEditing) {
+    // 编辑 → 预览：记下编辑器顶部可视行，渲染后滚到对应块
     tab.pendingSourceLine = editorRef.value?.getTopVisibleLine() ?? 1;
     tab.pendingScrollTop = 0;
     tab.isEditing = false;
     find.reset();
     return;
   }
+  // 预览 → 编辑：记下预览当前源码行，编辑器挂载后滚到该行
   const line = getPreviewTopSourceLine();
   tab.pendingSourceLine = 0;
   tab.isEditing = true;
@@ -539,6 +595,11 @@ function toggleEditorMode() {
   nextTick(() => editorRef.value?.scrollToLine(line));
 }
 
+/**
+ * MarkdownView 渲染完成回调：按标签的 pending 状态恢复滚动——
+ * hash 锚点 > 源码行 > 像素 scrollTop > 顶部。消费后清零。
+ * 切换标签/刷新/重载后的位置恢复都靠这里。
+ */
 function onRendered() {
   nextTick(() => {
     const tab = activeTab.value;
@@ -557,6 +618,7 @@ function onRendered() {
   });
 }
 
+/** 把当前滚动位置写回标签 + 按路径的历史记录（重开文件可恢复）。 */
 function saveCurrentScroll() {
   const tab = activeTab.value;
   if (tab && tab.path && viewerEl.value && !tab.isEditing) {
@@ -565,10 +627,12 @@ function saveCurrentScroll() {
   }
 }
 
+/** 给无扩展名/其他扩展的保存路径补 .md（新建文件对话框的容错）。 */
 function withMarkdownExtension(path: string): string {
   return /\.(md|markdown|mdx|txt)$/i.test(path) ? path : `${path}.md`;
 }
 
+/** 新建文件：选路径 → 写空文件 → 以编辑模式打开（并抑制 watcher 一秒）。 */
 async function createNewFile() {
   const dest = await save({
     title: t("editor.newFile"),
@@ -616,6 +680,7 @@ async function createNewFile() {
   }
 }
 
+/** 文件选择器打开单个 Markdown 文件。 */
 async function pickFile() {
   const selected = await open({
     multiple: false,
@@ -626,11 +691,13 @@ async function pickFile() {
   if (typeof selected === "string") await loadFile(selected);
 }
 
+/** 选择目录并开始监听（文件树根目录切换）。 */
 async function pickFolder() {
   const dir = await openFolder();
   if (dir) await startWatching(dir);
 }
 
+/** 启动目录监听：变更先刷文件树，150ms 后再分发到各标签（给树刷新让路）。 */
 async function startWatching(dir: string) {
   await watcher.start(dir, async (paths) => {
     await refreshTree();
@@ -640,6 +707,11 @@ async function startWatching(dir: string) {
   });
 }
 
+/**
+ * watcher 变更分发：单 watcher 匹配所有标签。
+ * 抑制表命中（自己保存触发）→ 忽略；干净标签静默重载；
+ * 脏标签弹外部变更确认。绝不直接 reload 覆盖未保存的草稿。
+ */
 async function onFilesChanged(paths: string[]) {
   for (const tab of [...tabs.value]) {
     if (!paths.some((p) => samePath(p, tab.path))) continue;
@@ -663,6 +735,7 @@ function closeFolder() {
   clearRoot();
 }
 
+/** 首次启动时取 argv 里的目标文件（文件关联/命令行唤起）。 */
 async function getInitialOpenFile(): Promise<string> {
   try {
     const path = await invoke<string | null>("initial_open_file");
@@ -672,6 +745,11 @@ async function getInitialOpenFile(): Promise<string> {
   }
 }
 
+/**
+ * 启动时恢复上次的标签列表（useTabs 持久化），兼容旧的
+ * 「最近一个文件」localStorage 记录；读不到的文件静默跳过。
+ * initialPath（argv 带来的）最后加载并激活。
+ */
 async function restoreTabs(initialPath = "") {
   const persisted = loadPersisted();
   let paths: string[] = [];
@@ -705,12 +783,14 @@ async function restoreTabs(initialPath = "") {
 
 const { themeMode, effectiveTheme } = useTheme();
 
+// 主题按钮图标：当前模式（亮/暗/跟随系统）
 const themeIcon = computed(() => {
   if (themeMode.value === "light") return "☀️";
   if (themeMode.value === "dark") return "🌙";
   return "🌗";
 });
 
+/** 主题循环切换：亮 → 暗 → 跟随系统。 */
 function toggleTheme() {
   if (themeMode.value === "system") themeMode.value = "light";
   else if (themeMode.value === "light") themeMode.value = "dark";
@@ -720,6 +800,10 @@ function toggleTheme() {
   renderTick.value++;
 }
 
+// ---- 导出四件套（HTML / DOCX / PDF / PNG），共用模式：
+// 编辑模式守卫 → bodyRef 校验 → exportBusy/Toast 反馈。----
+
+/** 导出单文件 HTML。 */
 async function exportHtml() {
   showExportMenu.value = false;
   if (isEditing.value) {
@@ -738,6 +822,7 @@ async function exportHtml() {
   }
 }
 
+/** 导出 DOCX（pandoc 转换，参考模板可选）。 */
 async function exportDocx() {
   showExportMenu.value = false;
   if (isEditing.value) {
@@ -764,6 +849,7 @@ async function exportDocx() {
   }
 }
 
+/** 导出 PDF（Edge headless）。探测失败时弹选择框让用户指定 msedge.exe。 */
 async function exportPdf() {
   showExportMenu.value = false;
   if (isEditing.value) {
@@ -807,6 +893,7 @@ async function exportPdf() {
   }
 }
 
+/** 直接调用系统打印（WebView 打印管线）。 */
 function doPrint() {
   if (isEditing.value) {
     errorMsg.value = t("editor.previewBeforeExport");
@@ -815,6 +902,7 @@ function doPrint() {
   if (bodyRef.value) printDocument(bodyRef.value, fileName.value);
 }
 
+/** 导出 PNG 长图（整篇所见即所得，见 exportImage.ts）。 */
 async function exportImage() {
   showExportMenu.value = false;
   if (isEditing.value) {
@@ -840,14 +928,17 @@ async function exportImage() {
   }
 }
 
+/** 全局搜索结果点击 → 打开对应文件。 */
 function onSearchOpen(path: string, _line: number) {
   void loadFile(path);
 }
 
+/** 文内 .md 相对链接点击 → 打开目标文件并跳锚点。 */
 function onInternalLink(path: string, hash: string) {
   void loadFile(path, hash);
 }
 
+/** 编辑器内容变更：更新草稿 + 重算脏标记；标题抽取做 200ms 防抖。 */
 function onDraftUpdate(value: string) {
   const tab = activeTab.value;
   if (!tab) return;
@@ -859,14 +950,17 @@ function onDraftUpdate(value: string) {
   }, 200);
 }
 
+/** 取路径的目录部分（统一成正斜杠后截取）。 */
 function dirOf(p: string): string {
   const normalized = p.replace(/\\/g, "/");
   const i = normalized.lastIndexOf("/");
   return i < 0 ? "" : normalized.slice(0, i);
 }
 
+// 最近文件（过滤掉已删除的），展示在欢迎页
 const recentFiltered = ref<RecentItem[]>([]);
 
+/** 刷新最近列表：取前 10 条并并发检查文件是否还存在。 */
 async function refreshRecent() {
   const items = recent.value.slice(0, 10);
   const checks = await Promise.all(
@@ -878,6 +972,7 @@ async function refreshRecent() {
   recentFiltered.value = checks.filter((c) => c.ok).map((c) => c.item);
 }
 
+/** Ctrl+滚轮缩放：编辑态调编辑器字号，预览态调阅读字号。 */
 function zoomFont(delta: number) {
   if (isEditing.value)
     setEditorFontSize(readingSettings.value.editorFontSize + delta);
@@ -895,6 +990,12 @@ function onWheel(e: WheelEvent) {
   zoomFont(e.deltaY < 0 ? 1 : -1);
 }
 
+/**
+ * 全局键盘分发中枢（window 级 keydown）。
+ * 优先级：未保存对话框打开时只响应 Esc → Esc 依次关闭查找/设置 →
+ * Ctrl/Cmd 组合键按 useShortcuts 的绑定表分发（含编辑/预览两套：编辑态
+ * 走 CodeMirror 的查找/替换/跳行，预览态走页内查找）。
+ */
 function onKeydown(e: KeyboardEvent) {
   const mod = e.ctrlKey || e.metaKey;
   if (showUnsavedDialog.value) {
@@ -977,6 +1078,7 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+// 阅读区滚动：驱动目录高亮（scrollSpy），滚动位置 400ms 防抖落盘
 let scrollSaveTimer: number | null = null;
 function onViewerScroll() {
   if (isEditing.value) return;
@@ -985,6 +1087,7 @@ function onViewerScroll() {
   scrollSaveTimer = window.setTimeout(saveCurrentScroll, 400);
 }
 
+// 面板显隐 → localStorage 记忆
 watch(showFileTree, (v) =>
   localStorage.setItem("md-reader-show-tree", v ? "1" : "0")
 );
@@ -992,6 +1095,8 @@ watch(showToc, (v) =>
   localStorage.setItem("md-reader-show-toc", v ? "1" : "0")
 );
 
+// 进入编辑态时移除预览引用（渲染 DOM 不存在，查找/大纲逻辑要避开）；
+// 回到预览态等 DOM 就绪后重算目录高亮。
 watch(isEditing, (editing) => {
   if (editing) {
     markdownRef.value = null;
@@ -1000,6 +1105,7 @@ watch(isEditing, (editing) => {
   nextTick(onScroll);
 });
 
+// 切标签：清错误与查找高亮，恢复目录高亮
 watch(activeTabId, () => {
   errorMsg.value = "";
   find.close();
@@ -1011,6 +1117,15 @@ let unlistenDrop: (() => void) | null = null;
 let unlistenOpen: (() => void) | null = null;
 let unlistenClose: (() => void) | null = null;
 
+/**
+ * 挂载流程（顺序敏感）：
+ * 1. 应用阅读设置、探测 pandoc/PDF 引擎（异步，不阻塞）
+ * 2. 恢复文件树根目录并启动监听
+ * 3. 监听 Rust 事件：md-reader://open-file（文件关联/单实例/odoc）
+ * 4. 窗口关闭保护：有脏标签时 preventDefault → 确认 → destroy()
+ * 5. 恢复标签列表 + 排空 macOS odoc 待开队列（监听器已就位）
+ * 6. 拖放打开、全局键盘/滚轮监听
+ */
 onMounted(async () => {
   applyReadingSettings();
   void checkPandoc().then((info) => (pandocInfo.value = info));
@@ -1031,6 +1146,8 @@ onMounted(async () => {
     console.warn("listen open-file unavailable", e);
   }
 
+  // 窗口关闭保护：注意确认通过后走一次性 destroy()，不能递归 close()
+  // （onCloseRequested 会再次触发，窗口就永远关不上了）。
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     appWindow = getCurrentWindow();
@@ -1060,6 +1177,7 @@ onMounted(async () => {
   } catch {
     /* backend build without the pending-file queue — nothing to drain */
   }
+  // 拖放：取第一个 Markdown 类型的文件打开
   try {
     const webview = getCurrentWebview();
     unlistenDrop = await webview.onDragDropEvent(async (event) => {
@@ -1089,11 +1207,13 @@ onUnmounted(() => {
   window.removeEventListener("wheel", onWheel);
 });
 
+// 标签集合变化（开/关/另存为改路径）→ 持久化标签列表
 watch(
   () => tabs.value.map((tb) => tb.path).join("\n"),
   () => persist()
 );
 
+// toast / 错误条自动消失
 watch(exportToast, (v) => {
   if (v) {
     window.setTimeout(() => {
@@ -1110,10 +1230,12 @@ watch(errorMsg, (v) => {
   }
 });
 
+// 关掉所有文件回到欢迎页时刷新最近列表（可能有删掉的文件）
 watch(hasActiveFile, (v) => {
   if (!v) void refreshRecent();
 });
 
+// 目录被挪到右侧后，「大纲」不能留在左侧，回落到文件树
 watch(
   () => readingSettings.value.tocPosition,
   (pos) => {
@@ -1436,6 +1558,7 @@ watch(
       </button>
     </header>
 
+    <!-- 标签栏（有标签时才显示） -->
     <TabBar
       v-if="tabs.length"
       :tabs="tabs"
@@ -1449,12 +1572,14 @@ watch(
       @copy-path="copyPath"
     />
 
+    <!-- 主体三栏：左侧面板（文件/搜索/大纲，可隐藏）· 阅读区 · 右侧目录 -->
     <main class="layout">
       <aside
         v-if="showFileTree"
         class="left"
         :style="{ width: leftWidth + 'px' }"
       >
+        <!-- 左侧面板切换：文件树 / 全局搜索 / 大纲（目录在左侧时才有此页） -->
         <div class="panel-tabs">
           <button
             class="tab"
@@ -1511,6 +1636,7 @@ watch(
 
       <div v-if="showFileTree" class="resizer" @pointerdown="resizeLeft"></div>
 
+      <!-- 阅读区：错误条 / 欢迎页 / 编辑器 / 预览 四种互斥形态 -->
       <section
         ref="viewerEl"
         class="viewer"
@@ -1520,6 +1646,7 @@ watch(
         <div v-if="errorMsg" class="error" @click="errorMsg = ''">
           {{ errorMsg }}
         </div>
+        <!-- 欢迎页：无打开文件时显示最近列表 -->
         <div v-if="!hasActiveFile" class="empty">
           <div class="empty-title">{{ t("app.emptyTitle") }}</div>
           <div class="empty-hint">{{ t("app.emptyHint") }}</div>
@@ -1585,6 +1712,7 @@ watch(
       </aside>
     </main>
 
+    <!-- 页内查找条（仅预览态；编辑态的查找在 CodeMirror 内部） -->
     <FindBar
       v-if="!isEditing"
       :visible="find.visible.value"
@@ -1602,6 +1730,7 @@ watch(
 
     <SettingsDialog :visible="showSettings" @close="showSettings = false" />
 
+    <!-- 未保存/外部变更确认：按钮文案按 mode 区分（保存/放弃 vs 重载/保留） -->
     <UnsavedChangesDialog
       :visible="showUnsavedDialog"
       :title="unsavedDialogTitle"
