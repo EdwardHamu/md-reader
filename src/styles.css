@@ -362,6 +362,8 @@ body {
 
 /* ---- math & mermaid ---- */
 .markdown-body .math-block {
+  /* span variant is used when \[...\] appears inside a paragraph */
+  display: block;
   margin: 1em 0;
   text-align: center;
   overflow-x: auto;
