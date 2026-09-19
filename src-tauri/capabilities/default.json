@@ -1,28 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "default permissions",
+  "description": "Read-only Markdown window; no filesystem write/export permissions.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "core:window:allow-destroy",
-    "core:webview:allow-internal-toggle-devtools",
-    "dialog:default",
-    "fs:default",
-    "opener:default",
-    "window-state:default",
-    "store:default",
-    "system-fonts:default",
-    "fs:allow-read-text-file",
-    "fs:allow-read-file",
-    "fs:allow-write-text-file",
-    "fs:allow-write-file",
-    "fs:allow-mkdir",
-    "fs:allow-exists",
+    "dialog:allow-open",
     {
-      "identifier": "fs:scope",
+      "identifier": "opener:allow-open-url",
       "allow": [
-        { "path": "**" }
+        {
+          "url": "https://*"
+        },
+        {
+          "url": "http://*"
+        },
+        {
+          "url": "mailto:*"
+        }
       ]
     }
   ]

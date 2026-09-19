@@ -7,9 +7,17 @@ import vueParser from "vue-eslint-parser";
 
 export default [
   {
-    ignores: ["node_modules/**", "dist/**", "src-tauri/target/**", "**/*.d.ts"],
+    ignores: [
+      "node_modules/**",
+      "dist/**",
+      "src-tauri/target/**",
+      "test-results/**",
+      "playwright-report/**",
+      "**/*.d.ts",
+    ],
   },
   js.configs.recommended,
+  { files: ["**/*.ts", "**/*.vue"], rules: { "no-undef": "off" } },
   ...vue.configs["flat/recommended"],
   {
     files: ["**/*.ts", "**/*.tsx"],

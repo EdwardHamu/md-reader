@@ -1,0 +1,105 @@
+name: Release Windows EXE
+run-name: release-win/${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag, e.g. v0.3.10-win.1 (must match the app version prefix)'
+        required: true
+        type: string
+      source_sha:
+        description: 'Exact source commit (40 hex characters); empty uses workflow ref commit'
+        required: false
+        default: ''
+        type: string
+      request_id:
+        description: 'Correlation ID for the monitoring script'
+        required: true
+        default: manual
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-win-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      REQUEST_ID: ${{ inputs.request_id }}
+      CARGO_NET_RETRY: '5'
+      CARGO_HTTP_TIMEOUT: '120'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Validate dispatch inputs
+        shell: pwsh
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-fA-F]{40}$') { throw 'source_sha must be a full commit SHA' }
+          if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?$') { throw 'Invalid release tag' }
+          if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9-]{1,80}$') { throw 'Invalid request ID' }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Validate versions and immutable source
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne $env:SOURCE_SHA) { throw 'Checkout SHA mismatch' }
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $tauri = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $cargo = Get-Content src-tauri/Cargo.toml -Raw
+          $cargoVersion = [regex]::Match($cargo, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          if ($package.version -ne $tauri.version -or $package.version -ne $cargoVersion) { throw 'Version files disagree' }
+          $prefix = '^v' + [regex]::Escape($package.version) + '($|-)'
+          if ($env:RELEASE_TAG -cnotmatch $prefix) { throw 'Release tag must match v<app-version> or v<app-version>-<suffix>' }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: windows-x64-nsis
+
+      - name: Install dependencies with retries
+        shell: pwsh
+        run: |
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            pnpm install --frozen-lockfile --config.fetch-retries=5 --config.fetch-retry-mintimeout=2000 --config.fetch-retry-maxtimeout=30000
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { throw 'Dependency installation failed after retries' }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
+
+      - name: Build only the Windows x64 NSIS installer
+        shell: pwsh
+        run: |
+          # Cargo retries downloads; outer retries also cover Tauri/NSIS tool downloads.
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            pnpm tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { throw 'NSIS build failed after retries' }
+            Start-Sleep -Seconds (10 * $attempt)
+          }
+
+      - name: Upload EXE and publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/publish-win.ps1 -Repository $env:GITHUB_REPOSITORY -Tag $env:RELEASE_TAG -SourceSha $env:SOURCE_SHA

@@ -22,23 +22,8 @@ export default defineConfig(async () => ({
     },
   },
   build: {
-    target: 'es2022',
-    chunkSizeWarningLimit: 1500,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes("node_modules")) {
-            if (id.includes("@codemirror") || id.includes("codemirror"))
-              return "vendor-codemirror";
-            if (id.includes("highlight.js")) return "vendor-hljs";
-            if (id.includes("markdown-it") || id.includes("dompurify"))
-              return "vendor-markdown";
-            if (id.includes("@tauri-apps")) return "vendor-tauri";
-            if (id.includes("vue")) return "vendor-vue";
-            if (id.includes("modern-screenshot")) return "vendor-screenshot";
-          }
-        },
-      },
-    },
+    target: "es2022",
+    chunkSizeWarningLimit: 600,
+    manifest: true,
   },
 }));

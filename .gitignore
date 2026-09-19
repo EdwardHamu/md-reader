@@ -48,7 +48,13 @@ AGENTS.md
 .kilo/
 
 # Local docs / drafts
-docs/
+docs/*
+!docs/mcp-md-reader-minimal-memory.md
+!docs/mcp-release-win.md
+
+# Browser test artifacts
+test-results/
+playwright-report/
 
 # pnpm
 pnpm-lock.yaml.bak

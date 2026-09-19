@@ -1,249 +1,53 @@
-# MD Reader
+# MD Reader · Minimal read-only edition
 
-**English** | [简体中文](README.md)
+A single-document Markdown reader built with Tauri 2 and Vue 3, reduced to prioritize low memory usage. This workspace is **not the original full-featured editor**. The simplified interface is currently Chinese.
 
-[![Release](https://img.shields.io/github/v/release/Neilooo/md-reader?include_prereleases&color=blue)](https://github.com/Neilooo/md-reader/releases)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Downloads](https://img.shields.io/github/downloads/Neilooo/md-reader/total)](https://github.com/Neilooo/md-reader/releases)
-[![Platform](<https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20(experimental)-lightgrey>)]()
+[中文](README.md)
 
-A lightweight, fast, WYSIWYG **Markdown viewer / reader / editor** desktop app. Built with **Tauri 2 + Vue 3 + Rust**.
+## Included
 
-Small footprint (~6 MB), fast startup, multi-tab editing, source editing, KaTeX math, Mermaid diagrams, syntax highlighting, file tree, full-text search, and high-fidelity PDF/HTML/DOCX/PNG export.
+Open/drop/OS-associated Markdown files, a heading outline, in-document find, relative document links, local/remote images, GFM tables, read-only tasks, footnotes, basic highlighting, light/dark themes and font size. Single-instance handling and window geometry restoration remain.
 
-📦 **[Download the latest release](https://github.com/Neilooo/md-reader/releases/latest)**
+Basic highlighting covers JavaScript, TypeScript, JSON, Bash, Python, CSS, HTML/XML and Rust. Other languages and Mermaid fences remain readable code. Math is not rendered. YAML front matter is escaped text; MDX does not execute JSX.
 
----
+## Removed
 
-## Features
+Editing/saving, tabs, recent files/session restoration, file tree, recursive scanning/watchers, cross-file search, all exports/printing/PDF preview, KaTeX, Mermaid, emoji shortcodes, update checks, font enumeration and advanced settings. Existing user settings/files are not deleted.
 
-### Multi-tab
+## Resource boundaries
 
-- Open multiple Markdown files at once, switch via the horizontal tab bar under the toolbar
-- Click to switch, middle-click to close; reopening an already-open file focuses its tab instead of duplicating
-- Each tab independently keeps its content, unsaved draft, edit/preview mode, outline, and scroll position
-- Tab context menu: close / close others / close all, refresh, copy file path, reveal in folder
-- Restores the last open tabs and active tab on restart
+- Current DOM only; no retained source/HTML history, background worker or multi-document cache.
+- Markdown/highlighting loaded on first open; theme/font changes do not re-parse documents.
+- One in-flight read plus the latest pending path; stale results are discarded.
+- UTF-8 files up to **8 MiB**; up to 60,000 lines, 60,000 tokens allocated during parsing, 60,000 HTML markers (including closing tags), 60,000 display nodes, 3,000 headings and 12 Mi characters of rendered HTML. Limits produce explicit errors, not silent truncation.
+- Token allocations are guarded during parsing, and HTML markers are bounded before DOM construction. Bare URLs are not auto-detected: use `[title](https://example.com)` or `<https://example.com>` syntax.
+- Code blocks over 20,000 characters remain plain text.
+- Find keeps at most 1,000 Ranges, debounces 150 ms and does not insert wrapper nodes. Matches are within individual text nodes. Older WebViews without CSS Highlights fall back to selecting the current result.
+- Switching/closing releases find Ranges, outline metadata and the old DOM. Garbage collection and operating-system memory return are not instantaneous.
+- DOMPurify and CSP protect rendered HTML; no Markdown write/export commands.
 
-### Reading
-
-- CommonMark + GitHub Flavored Markdown
-- YAML Front Matter parsing & preview: top `---` metadata renders as an info card, body and outline strip the metadata
-- Syntax highlighting with highlight.js (30+ languages)
-- Math formulas with KaTeX (lazy-loaded)
-- 20+ Mermaid diagram types (flowchart, sequence, gantt, class, state, mindmap, pie and more; lazy-loaded, SVG sanitized via DOM parsing — strips scripts and event handlers only)
-- Task lists, footnotes, emoji, heading anchors
-- Light / dark theme with persisted preference
-
-### Editing
-
-- CodeMirror source editing mode with Markdown highlighting, line numbers, folding, bracket matching, find/replace, and go to line
-- One-click preview / edit switch (`Ctrl+E`), with viewport synced by source line on toggle
-- Markdown formatting shortcuts: `Ctrl+B` bold, `Ctrl+I` italic, `Ctrl+U` underline, `Ctrl+L` highlight, `` Ctrl+Shift+` `` inline code
-- Paste images in edit mode with `Ctrl+V`: auto-saves to `images/` next to the current file and inserts a Markdown link
-- Manual save / save as with unsaved-change protection for tab switches, tab close, window close, and external file changes
-
-### Navigation
-
-- File tree for Markdown folders
-- Outline / TOC with scroll sync, hierarchical expand/collapse (▶/▼ arrows + expand all/collapse all buttons; collapse all shows up to level 2)
-- Outline position configurable in settings: left (sidebar tab, toolbar outline button hidden) / right (standalone panel), default right
-- Resizable three-column layout
-- Internal Markdown links: `[text](./other.md#heading)`
-- Relative image path rewriting
-
-### Search
-
-- `Ctrl+F` find in current document
-- `Ctrl+Shift+F` full-text search across files (Rust backend)
-
-### Export
-
-- **PDF**: Edge headless, 1-3 seconds, WYSIWYG, no LaTeX required; 24 preset templates plus font / color / spacing / page styling with live preview (see "PDF export styling" below)
-- **PNG long image**: renders the entire document into a single WYSIWYG image (math, diagrams, syntax highlighting, tables included); 2x scale by default, auto-fitted for very long documents
-- **HTML**: self-contained single file with images/CSS embedded
-- **DOCX**: powered by pandoc; optionally set a Word template `.docx` via `--reference-doc` to control fonts, headings and paragraph styles
-
-### Desktop integration
-
-- Reading settings: font size, editor font size, line height, width, font family, outline position
-- Reader background color: customized separately for light / dark themes, with preset swatches and one-click reset
-- Customizable shortcuts: Settings -> View shortcuts, click a key cap to record a new combo; supports global and editor shortcuts, conflict detection, per-item and full reset
-- File watching with auto refresh
-- Recent files and per-file scroll position restore; empty state shows recent file list with click-to-open
-- File association for `.md / .markdown / .mdx`; settings page can register per-user file associations (works for the portable build too)
-- Single-instance behavior: opening another file reuses the existing window
-- Drag and drop files into the window
-- UI language switch: Chinese / English
-- Check for updates: settings page shows the current version and compares it with the latest GitHub Release, with a one-click link to the download page when a newer version is found
-
-## Keyboard Shortcuts
-
-| Shortcut           | Action                                                                 |
-| ------------------ | ---------------------------------------------------------------------- |
-| `Ctrl+E`           | Toggle preview / edit mode                                             |
-| `Ctrl+B`           | Bold (edit mode)                                                       |
-| `Ctrl+I`           | Italic (edit mode)                                                     |
-| `Ctrl+U`           | Underline (edit mode)                                                  |
-| `Ctrl+L`           | Highlight (edit mode)                                                  |
-| `` Ctrl+Shift+` `` | Inline code (edit mode)                                                |
-| `Ctrl+F`           | Find in current document; editor search in edit mode                   |
-| `Ctrl+H`           | Replace in edit mode                                                   |
-| `Ctrl+G`           | Go to line in edit mode                                                |
-| `Ctrl+Shift+F`     | Full-text search                                                       |
-| `Ctrl+N`           | New Markdown file                                                      |
-| `Ctrl+O`           | Open file                                                              |
-| `Ctrl+W`           | Close current tab                                                       |
-| `Ctrl+Tab`         | Next tab                                                               |
-| `Ctrl+Shift+Tab`   | Previous tab                                                           |
-| `Ctrl+→`           | Next tab (right arrow)                                                 |
-| `Ctrl+←`           | Previous tab (left arrow)                                              |
-| `Ctrl+,`           | Reading settings                                                       |
-| `Ctrl+S`           | Save current file                                                      |
-| `Ctrl+Shift+S`     | Save as                                                                |
-| `Ctrl+P`           | System print / Save as PDF                                             |
-| `Ctrl+=`           | Increase font size (editor font in edit mode, reading font in preview) |
-| `Ctrl+-`           | Decrease font size (same as above)                                     |
-| `Ctrl+0`           | Reset font size to default (editor 14px, reading 16px)                 |
-| `Ctrl+Scroll`      | Zoom font size (same as Ctrl+=/-, two-mode branching)                  |
-| `Esc`              | Close find/settings/dialogs                                            |
-
-> All shortcuts above can be customized in **Settings -> View shortcuts** (except Esc and scroll zoom).
-
-## Screenshots
-
-![image-20260701093258687](./screenshot/image-20260701093258687.png)
-
-![image-20260701093345426](./screenshot/image-20260701093345426.png)
-
-![PDF export styling settings](./screenshot/pdf-export-settings-0.3.7.png)
-
-## Installation
-
-### Windows (official)
-
-Download from the [Releases page](https://github.com/Neilooo/md-reader/releases/latest):
-
-| File                                   | Description                                                         |
-| -------------------------------------- | ------------------------------------------------------------------- |
-| `MD-Reader-*-windows-x64-setup.msi`    | Installer with file association support                             |
-| `MD-Reader-*-windows-x64-portable.exe` | Portable executable, no registry changes                            |
-| `MD-Reader-*-windows-x64-portable.zip` | Portable zip: extract and run, avoids browser exe download blocking |
-
-> Windows 10 / 11 usually includes WebView2 Runtime. Older Windows 10 builds may need the [Microsoft WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
-
-### macOS / Linux (experimental)
-
-macOS and Linux builds are **experimental**, produced via GitHub Actions on release tags and attached to the [Releases page](https://github.com/Neilooo/md-reader/releases). They are not code-signed:
-
-- macOS: download `.dmg` or `.app.tar.gz`
-- Linux: download `.AppImage` / `.deb` / `.rpm`
-
-> Unsigned builds: on macOS, right-click → Open on first launch, or run `xattr -dr com.apple.quarantine "MD Reader.app"`; on Linux, `chmod +x` the AppImage first.
-
-## External Dependencies
-
-Core reading and editing features require **no external tools**. Optional features need the tools below:
-
-| Feature                                                                            | Dependency                          | Included on Windows 10/11 | Notes                         |
-| ---------------------------------------------------------------------------------- | ----------------------------------- | :-----------------------: | ----------------------------- |
-| Reading / editing / multi-tab / file tree / search / math / diagrams / HTML / PNG export | None                                |             —             | Works out of the box          |
-| **PDF export**                                                                     | Microsoft Edge (Chromium) / Chrome  | ✅ Edge usually included  | Used for WYSIWYG PDF export   |
-| **DOCX export**                                                                    | [pandoc](https://pandoc.org/) ≥ 2.x |            ❌             | Install only if you need DOCX |
-| Print                                                                              | System print dialog                 |            ✅             | Optional fallback             |
-
-### Install pandoc (DOCX export only)
-
-```powershell
-winget install --id JohnMacFarlane.Pandoc -e
-```
-
-Or download it from [pandoc.org/installing.html](https://pandoc.org/installing.html). Restart MD Reader after installing pandoc.
-
-> PDF / HTML export does **not** require pandoc.
+Images use native lazy loading, **not a hard decoded-image memory budget**. Large or previously viewed images can still be expensive. WebView2 has its own baseline cost; bundle size is not process RAM.
 
 ## Development
 
-### Requirements
-
-| Tool                      | Version | Install                                 |
-| ------------------------- | ------- | --------------------------------------- |
-| Node.js                   | ≥ 18    | https://nodejs.org/                     |
-| pnpm                      | ≥ 8     | `npm install -g pnpm`                   |
-| Rust                      | ≥ 1.77  | https://rustup.rs/                      |
-| WebView2 Runtime          | —       | Usually included on Windows 10/11       |
-| Visual Studio Build Tools | 2019+   | `Desktop development with C++` workload |
-
-### Commands
+Node.js 22.6+, pnpm, Rust and platform-specific [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) are required.
 
 ```bash
-pnpm install
-pnpm tauri dev
-pnpm tauri build
+pnpm install --frozen-lockfile --config.fetch-retries=3
+pnpm test
 pnpm lint
-pnpm format
+pnpm build
+CARGO_NET_RETRY=3 cargo test --manifest-path src-tauri/Cargo.toml
+pnpm test:e2e
+pnpm tauri dev
 ```
 
-## Tech Stack
+Browser tests use installed Microsoft Edge and mock Tauri IPC; they do not prove native drag/drop, file associations or macOS/Linux integration. Change the channel in `playwright.config.ts` for other platforms. Tests and development dependencies are not shipped in the application.
 
-- **Desktop**: Tauri 2 (Rust + WebView2)
-- **Frontend**: Vue 3 + TypeScript + Vite
-- **Markdown**: markdown-it plugins
-- **Editor**: CodeMirror 6
-- **Math**: KaTeX
-- **Diagrams**: Mermaid
-- **Highlighting**: highlight.js
-- **PDF export**: system Edge `--headless=new --print-to-pdf`
-- **DOCX export**: pandoc
-- **File watching**: notify + notify-debouncer-mini
-- **Full-text search**: walkdir + line scanning
-- **File association / single instance**: tauri-plugin-single-instance
-- **i18n**: vue-i18n
+Keyboard shortcuts: Ctrl/Cmd+O to open, +F to find, +W to close the document; Enter/Shift+Enter to navigate matches, Escape to close find; Ctrl/Cmd with +, − or 0 adjusts/resets the font size.
 
-## PDF Export Styling
-
-Settings → "PDF export" tab (independent from reading settings), applied when exporting PDF / printing:
-
-- **24 preset templates**, grouped in the dropdown:
-  - Document: Modern (default) / Minimal / Academic / Eye-care / Business Blue / Classic Brown / GitHub
-  - Developer: Dark / Terminal Green / Dracula Purple / VS Code Blue / Nord / Solarized Light / Solarized Dark / Gruvbox Light / Gruvbox Dark / Monokai / Catppuccin / One Dark
-  - Creative: Sakura Pink / Lavender / Ocean Cyan / Sunset Orange / Forest Moss
-- **Density**: compact / standard / loose
-- **Fonts**: body / heading / code font family, body size, line height
-- **Colors**: text, headings, links, code background, page background and more
-- **Page**: A4 / Letter, portrait / landscape, margins
-- **Live preview**: editable sample text with instant updates, plus an optional light / dark side-by-side comparison
-
-## How PDF Export Works
-
-MD Reader does not use LaTeX for PDF export.
-
-1. The frontend clones the already-rendered DOM (KaTeX and Mermaid are already rendered)
-2. Images are embedded as base64 and CSS is inlined
-3. Rust writes a temporary HTML file under `%TEMP%`
-4. System Edge runs in headless mode: `--headless=new --print-to-pdf=...`
-5. The generated PDF is copied to the user-selected output path
-
-Result: fast, high-fidelity, WYSIWYG PDF export in 1-3 seconds.
-
-## FAQ
-
-### WebView2 is missing
-
-Install the WebView2 Evergreen Runtime from Microsoft: https://developer.microsoft.com/microsoft-edge/webview2/
-
-### PDF export cannot find Edge
-
-MD Reader will ask you to choose `msedge.exe`. Chrome also works if Edge is unavailable.
-
-### DOCX export says pandoc is missing
-
-Install pandoc and restart MD Reader.
-
-### Does it support macOS / Linux?
-
-Yes, but currently as experimental builds. The official release targets Windows; macOS / Linux can be built via GitHub Actions yourself (see Installation above). These experimental builds are not code-signed.
+See the [audit and verification report](docs/mcp-md-reader-minimal-memory.md) for measured results and limitations.
 
 ## License
 
-MIT
+[MIT](LICENSE). Original author/project attribution: Neilooo/md-reader. Release scripts are retained; this change does not publish a release.
