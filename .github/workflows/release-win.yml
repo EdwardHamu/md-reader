@@ -62,6 +62,10 @@ jobs:
           $prefix = '^v' + [regex]::Escape($package.version) + '($|-)'
           if ($env:RELEASE_TAG -cnotmatch $prefix) { throw 'Release tag must match v<app-version> or v<app-version>-<suffix>' }
 
+      - name: Test release publisher control flow (offline)
+        shell: pwsh
+        run: ./scripts/test-publish-win.ps1
+
       - uses: pnpm/action-setup@v4
         with:
           version: 11.21.0

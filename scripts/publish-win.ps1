@@ -17,6 +17,7 @@ if ($Tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?$')
 
 function Invoke-Gh {
     param([string[]]$Arguments, [switch]$AllowNotFound)
+    $operation = ($Arguments | Select-Object -First 2) -join ' '
     for ($attempt = 1; $attempt -le 5; $attempt++) {
         # Process timeout also bounds an upload whose TCP connection stops responding.
         $info = [System.Diagnostics.ProcessStartInfo]::new('gh')
@@ -46,10 +47,25 @@ function Invoke-Gh {
             }
         }
         $process.Dispose()
-        if ($attempt -eq 5) { throw "gh failed after $attempt attempts: $errorText" }
-        Write-Warning "gh request failed ($attempt/5): $errorText"
+        if ($attempt -eq 5) { throw "gh [$operation] failed after $attempt attempts: $errorText" }
+        Write-Warning "gh [$operation] request failed ($attempt/5): $errorText"
         Start-Sleep -Seconds ([Math]::Min(30, [Math]::Pow(2, $attempt)))
     }
+}
+
+# GET /releases/tags/{tag} only finds published releases. The authenticated list
+# includes drafts; paginate so an older draft is not mistaken for a missing release.
+function Find-ReleaseJson {
+    param([switch]$Required)
+    $query = '.[] | select(.tag_name == "' + $Tag + '")'
+    $json = Invoke-Gh -Arguments @('api', "repos/$Repository/releases?per_page=100", '--paginate', '--jq', $query)
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        if ($Required) { throw "Release '$Tag' was not visible in the authenticated release list after creation" }
+        return $null
+    }
+    $releaseInfo = $json | ConvertFrom-Json
+    if ($releaseInfo.tag_name -ne $Tag -or -not $releaseInfo.id) { throw 'Invalid release lookup response' }
+    return $json
 }
 
 $files = @(Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe' -File)
@@ -75,7 +91,7 @@ function Assert-TagCommit {
     return $true
 }
 $tagExists = Assert-TagCommit
-$releaseJson = Invoke-Gh -Arguments @('api', "repos/$Repository/releases/tags/$Tag") -AllowNotFound
+$releaseJson = Find-ReleaseJson
 $newRelease = $null -eq $releaseJson
 if (-not $newRelease -and -not $tagExists) {
     $existing = $releaseJson | ConvertFrom-Json
@@ -90,19 +106,20 @@ if ($newRelease) {
         [void](Invoke-Gh -Arguments @('release', 'create', $Tag, '--repo', $Repository, '--target', $SourceSha, '--title', "MD Reader $Tag (Windows x64)", '--notes', $notes, '--draft'))
     } catch {
         # Creation can succeed remotely even if its response is lost; reconcile before failing.
-        $releaseJson = Invoke-Gh -Arguments @('api', "repos/$Repository/releases/tags/$Tag") -AllowNotFound
+        $releaseJson = Find-ReleaseJson
         if ($null -eq $releaseJson) { throw }
     }
 }
 # Reconcile the draft target again after creation (including a lost create response).
-$beforeUpload = (Invoke-Gh -Arguments @('api', "repos/$Repository/releases/tags/$Tag")) | ConvertFrom-Json
+$beforeUpload = (Find-ReleaseJson -Required) | ConvertFrom-Json
+$releaseId = $beforeUpload.id
 if (-not (Assert-TagCommit)) {
     $encodedTarget = [Uri]::EscapeDataString($beforeUpload.target_commitish)
     $targetCommit = ((Invoke-Gh -Arguments @('api', "repos/$Repository/commits/$encodedTarget")) | ConvertFrom-Json).sha
     if ($targetCommit -ne $SourceSha) { throw 'Draft source changed; refusing upload' }
 }
 [void](Invoke-Gh -Arguments @('release', 'upload', $Tag, $asset, '--repo', $Repository, '--clobber'))
-$release = (Invoke-Gh -Arguments @('api', "repos/$Repository/releases/tags/$Tag")) | ConvertFrom-Json
+$release = (Invoke-Gh -Arguments @('api', "repos/$Repository/releases/$releaseId")) | ConvertFrom-Json
 $uploaded = @($release.assets | Where-Object { $_.name -eq $assetName })
 if ($uploaded.Count -ne 1 -or $uploaded[0].size -ne $size -or $uploaded[0].state -ne 'uploaded') { throw 'Uploaded asset verification failed' }
 if ($uploaded[0].digest -and $uploaded[0].digest -ne "sha256:$hash") { throw 'Uploaded asset SHA256 mismatch' }
@@ -112,7 +129,7 @@ if ($release.draft) {
     [void](Invoke-Gh -Arguments @('release', 'edit', $Tag, '--repo', $Repository, '--target', $SourceSha, '--draft=false'))
 }
 if (-not (Assert-TagCommit)) { throw 'Published release tag is missing' }
-$verified = (Invoke-Gh -Arguments @('api', "repos/$Repository/releases/tags/$Tag")) | ConvertFrom-Json
+$verified = (Invoke-Gh -Arguments @('api', "repos/$Repository/releases/$releaseId")) | ConvertFrom-Json
 if ($verified.draft) { throw 'Release remained a draft' }
 @"
 ## Windows x64 release
