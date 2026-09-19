@@ -11,7 +11,8 @@
 - `.github/workflows/release-win.yml`：手动触发的 Windows 构建、依赖/打包重试、发布。
 - `scripts/release-win.sh`：自动推送已有提交，再使用 gh 触发、定位本次运行、持续监控、桌面通知。
 - `scripts/publish-win.ps1`：CI 专用发布辅助脚本；校验标签源码、上传 EXE、检查大小/可用的服务端摘要，再发布 Release。
-- `scripts/test-release-win.sh`：无网络、无真实弹窗的模拟回归测试。
+- `scripts/test-release-win.sh`：无网络、无真实弹窗的监控/推送模拟回归测试。
+- `scripts/test-publish-win.ps1` / `scripts/test-publish-win-http.mjs`：真实 PowerShell REST 传输的本机回环 HTTP 集成测试。
 
 ## 首次使用
 
@@ -42,7 +43,7 @@ bash scripts/release-win.sh \
 - 资产名称：`MD-Reader-<tag>-windows-x64-setup.exe`。
 - 新 Release 先建草稿，成功上传并验证后公开；新发布使用普通 Release 默认设置。失败时可能保留草稿，便于排查。
 - 已有标签（包含 annotated tag）必须指向同一源码提交；未创建标签的已有草稿也必须指向同一源码。否则失败，不移动旧标签。
-- 同一标签下同名 EXE 会通过 `--clobber` 更新；不删除其他资产，不改已有 Release 标题、说明、prerelease 设置。已有公开 Release 的资产替换期间可能暂时不可下载。
+- 同一标签下同名 EXE 会先核验摘要；需要更新时仅删除该同名资产后重传；不删除其他资产，不改已有 Release 标题、说明、prerelease 设置。已有公开 Release 的资产替换期间可能暂时不可下载。
 - CI 可以按固定 SHA 创建远端发布标签，但本地脚本只自动 push 当前分支已有提交，不执行 git add/commit/tag，不触碰用户正在运行的应用。
 - EXE 未做代码签名，Windows 可能显示 SmartScreen 警告；保留 Tauri 的 WebView2 安装策略，不宣称离线自包含。
 
@@ -65,7 +66,7 @@ bash scripts/release-win.sh --notify-test
 
 ## 请求重试
 
-所有实际 gh 网络调用和新增的 git push 都有超时及重试：
+本机触发/监控使用 gh，CI 发布使用 PowerShell REST API；这些网络调用及 git push 均有超时和重试：
 
 - 自动推送使用同一重试包装器（默认最多 5 次，每次 90 秒），明确关闭 followTags 和子模块递归推送，使用固定提交 SHA 到当前分支的单一 refspec；不强推、不修改 Git 全局设置。认证失败、非快进或分支保护拒绝后停止，不触发构建。
 
@@ -144,3 +145,24 @@ bash scripts/release-win.sh --ref main --tag v0.3.10-win.2
 ```
 
 请使用未占用的新标签。旧 `v0.3.10-win.1` 草稿仍绑定旧提交，新修复提交不应直接混用该标签；本次没有擅自删除、改绑或发布旧草稿。
+
+## 第二次修复：发布直接使用创建响应的 ID（2026-09-19）
+
+`win.2` 仍出现创建后列表未匹配到 Release 的错误。只读查询确认其草稿存在：ID `391992158`，源码 `8de065d8f5cf3bef37e692b7849f6d1f61a0c611`，资产为空。现有日志不足以区分 CI 当时列表可见性与 gh/jq 参数传递等因素，不把某个猜测认定为唯一根因；可以确认旧流程不该把创建后的成功判断建立在再次列表检索上。
+
+本次替换发布传输与控制流程：
+
+- PowerShell 直接调用 GitHub REST API，Authorization 仅通过进程内 HTTP Header 传递，不经命令行参数，不打印 token。
+- 初始已有版本发现用分页 JSON，在 PowerShell 中比较 `tag_name`，不再跨 Windows 原生命令边界传递 jq 表达式。
+- `POST /releases` 创建草稿，直接保留返回 JSON 的 `id`；创建成功后不重新按标签或列表定位。
+- 二进制上传走 `uploads.github.com/.../releases/{id}/assets`，最终发布用 `PATCH /releases/{id}`；按 ID 校验发布状态。
+- 请求均有 180 秒超时及有界重试。创建响应丢失时先查找进行对账；上传响应丢失时按 ID 校验已存在资产，避免同一文件重复上传。
+- 标签/草稿的源码 SHA、大小、可用的服务端 SHA256、同名资产范围等安全检查保留。
+
+旧的 8 项测试只替换了 gh 调用，未覆盖实际传输；上面的 AST/mock 测试记录为历史记录。本次已替换为 Node 回环 HTTP 服务 + 实际 PowerShell/Invoke-RestMethod，不使用真实 GitHub 凭据。
+
+**本机 11/11 HTTP 集成测试通过**：创建后列表永远为空仍能成功发布、已有草稿、已有公开版本、第二页草稿、创建响应丢失、上传响应丢失、HTTP 503 重试、标签源码冲突、草稿源码冲突、错误摘要、创建响应缺失 ID。测试验证了真实 JSON 和二进制请求内容，过程中也发现并修正 Windows PowerShell 对 REST 数组的管道枚举问题。JS 测试文件 ESLint 与 git diff --check 通过。
+
+本机测试运行于已安装的 Windows PowerShell；workflow 在 Node 初始化后、Rust/NSIS 构建前，用 CI 当前的 PowerShell 7 运行同一套测试。尚未再次执行线上发布，不能将本机 HTTP 通过等同于 GitHub 端到端成功。
+
+本次未提交/推送，也未删除、改绑或发布 `win.1`、`win.2` 草稿。提交修复后，请使用未占用的新标签，例如 `v0.3.10-win.3`，重新触发；旧运行的 Re-run 仍固定在旧源码上。请一并提交 workflow、两个测试文件、发布脚本及本说明。

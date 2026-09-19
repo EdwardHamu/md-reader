@@ -62,6 +62,11 @@ pnpm tauri dev
 
 本次调研、前后对比、验证结果及未验证项见 [内存优化记录](docs/mcp-md-reader-minimal-memory.md)。开发依赖和测试浏览器不打包到阅读器。
 
+- 打包示例
+```bash
+bash scripts/release-win.sh --ref main --tag v0.3.10-win.3
+```
+
 ## 许可
 
 [MIT](LICENSE)。保留原项目 Neilooo/md-reader 的作者信息；原有发布脚本仍保留，本次不自动发布。

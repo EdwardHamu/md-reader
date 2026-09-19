@@ -62,10 +62,6 @@ jobs:
           $prefix = '^v' + [regex]::Escape($package.version) + '($|-)'
           if ($env:RELEASE_TAG -cnotmatch $prefix) { throw 'Release tag must match v<app-version> or v<app-version>-<suffix>' }
 
-      - name: Test release publisher control flow (offline)
-        shell: pwsh
-        run: ./scripts/test-publish-win.ps1
-
       - uses: pnpm/action-setup@v4
         with:
           version: 11.21.0
@@ -73,6 +69,9 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
+      - name: Test publisher with real loopback HTTP (offline)
+        shell: pwsh
+        run: ./scripts/test-publish-win.ps1
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc

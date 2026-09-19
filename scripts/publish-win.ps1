@@ -1,4 +1,5 @@
-# CI publisher: only the NSIS EXE is attached, never MSI/ZIP/macOS/Linux artifacts.
+# CI publisher. IDs returned by GitHub are authoritative; never rediscover a newly
+# created draft through the published-only tag endpoint or a potentially stale list.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Repository,
@@ -6,131 +7,138 @@ param(
     [Parameter(Mandatory = $true)][string]$SourceSha
 )
 $ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $false
-$env:GH_HOST = 'github.com'
-$env:GH_PROMPT_DISABLED = '1'
-
+$ProgressPreference = 'SilentlyContinue'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This publisher is intended for GitHub Actions only.' }
+if (-not $env:GH_TOKEN) { throw 'GH_TOKEN is required' }
 if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Invalid repository' }
 if ($SourceSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'Invalid source SHA' }
-if ($Tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9][A-Za-z0-9.-]*)?$') { throw 'Invalid tag' }
+if ($Tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9][A-Za-z0-9.-]*)?$') { throw 'Invalid tag' }
+$api = "https://api.github.com/repos/$Repository"
+$uploadsApi = "https://uploads.github.com/repos/$Repository"
+$headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'md-reader-release-win' }
 
-function Invoke-Gh {
-    param([string[]]$Arguments, [switch]$AllowNotFound)
-    $operation = ($Arguments | Select-Object -First 2) -join ' '
-    for ($attempt = 1; $attempt -le 5; $attempt++) {
-        # Process timeout also bounds an upload whose TCP connection stops responding.
-        $info = [System.Diagnostics.ProcessStartInfo]::new('gh')
-        $info.UseShellExecute = $false
-        $info.RedirectStandardOutput = $true
-        $info.RedirectStandardError = $true
-        foreach ($arg in $Arguments) { $info.ArgumentList.Add($arg) }
-        $process = [System.Diagnostics.Process]::new()
-        $process.StartInfo = $info
-        [void]$process.Start()
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(180000)) {
-            $process.Kill($true)
-            $process.WaitForExit()
-            $errorText = 'gh request timed out after 180 seconds'
-        } else {
-            $errorText = $stderr.GetAwaiter().GetResult()
-            if ($process.ExitCode -eq 0) {
-                $result = $stdout.GetAwaiter().GetResult()
-                $process.Dispose()
-                return $result
-            }
-            if ($AllowNotFound -and $errorText -match 'HTTP 404') {
-                $process.Dispose()
-                return $null
-            }
+function Invoke-Api {
+    param([string]$Method, [string]$Uri, $Body, [string]$File, [switch]$AllowNotFound, [int]$Attempts = 5)
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            $options = @{ Method=$Method; Uri=$Uri; Headers=$headers; TimeoutSec=180; ErrorAction='Stop'; UseBasicParsing=$true }
+            if ($File) { $options.InFile=$File; $options.ContentType='application/octet-stream' }
+            elseif ($null -ne $Body) { $options.Body=[Text.Encoding]::UTF8.GetBytes(($Body | ConvertTo-Json -Depth 10 -Compress)); $options.ContentType='application/json; charset=utf-8' }
+            # Materialize then emit: Invoke-RestMethod otherwise writes an array as
+            # one pipeline object, breaking page counts in Windows PowerShell 5.
+            $responseValue = Invoke-RestMethod @options
+            return $responseValue
+        } catch {
+            $code = 0
+            if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+            if ($AllowNotFound -and $code -eq 404) { return $null }
+            if ($attempt -eq $Attempts) { throw }
+            Write-Warning "$Method $Uri failed (HTTP $code, $attempt/$Attempts); retrying"
+            Start-Sleep -Seconds ([Math]::Min(30, [Math]::Pow(2, $attempt)))
         }
-        $process.Dispose()
-        if ($attempt -eq 5) { throw "gh [$operation] failed after $attempt attempts: $errorText" }
-        Write-Warning "gh [$operation] request failed ($attempt/5): $errorText"
-        Start-Sleep -Seconds ([Math]::Min(30, [Math]::Pow(2, $attempt)))
     }
 }
 
-# GET /releases/tags/{tag} only finds published releases. The authenticated list
-# includes drafts; paginate so an older draft is not mistaken for a missing release.
-function Find-ReleaseJson {
-    param([switch]$Required)
-    $query = '.[] | select(.tag_name == "' + $Tag + '")'
-    $json = Invoke-Gh -Arguments @('api', "repos/$Repository/releases?per_page=100", '--paginate', '--jq', $query)
-    if ([string]::IsNullOrWhiteSpace($json)) {
-        if ($Required) { throw "Release '$Tag' was not visible in the authenticated release list after creation" }
-        return $null
+function Find-Release {
+    # Only discovery/reconciliation uses listing; filter decoded JSON in PowerShell,
+    # not a jq expression passed through the Windows native-command argument boundary.
+    for ($page = 1; ; $page++) {
+        $items = @(Invoke-Api GET "$api/releases?per_page=100&page=$page")
+        $matches = @($items | Where-Object { $_.tag_name -ceq $Tag })
+        if ($matches.Count -gt 1) { throw 'Multiple releases match this tag; refusing to guess' }
+        if ($matches.Count -eq 1) { return $matches[0] }
+        if ($items.Count -lt 100) { return $null }
     }
-    $releaseInfo = $json | ConvertFrom-Json
-    if ($releaseInfo.tag_name -ne $Tag -or -not $releaseInfo.id) { throw 'Invalid release lookup response' }
-    return $json
 }
 
-$files = @(Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe' -File)
-if ($files.Count -ne 1 -or $files[0].Length -eq 0) { throw 'Expected exactly one non-empty NSIS installer EXE' }
-$assetName = "MD-Reader-$Tag-windows-x64-setup.exe"
-$staging = Join-Path $env:RUNNER_TEMP "md-reader-exe-$env:GITHUB_RUN_ID"
-New-Item -ItemType Directory -Path $staging -Force | Out-Null
-$asset = Join-Path $staging $assetName
-Copy-Item -LiteralPath $files[0].FullName -Destination $asset -Force
-$hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-$size = (Get-Item -LiteralPath $asset).Length
-
-# Resolve annotated tags too. Never attach new code to a tag pointing to a different commit.
 function Assert-TagCommit {
-    $refJson = Invoke-Gh -Arguments @('api', "repos/$Repository/git/ref/tags/$Tag") -AllowNotFound
-    if ($null -eq $refJson) { return $false }
-    $obj = ($refJson | ConvertFrom-Json).object
-    for ($depth = 0; $obj.type -eq 'tag'; $depth++) {
+    $reference = Invoke-Api GET "$api/git/ref/tags/$Tag" -AllowNotFound
+    if ($null -eq $reference) { return $false }
+    $obj = $reference.object
+    for ($depth=0; $obj.type -eq 'tag'; $depth++) {
         if ($depth -ge 8) { throw 'Annotated tag chain is too deep' }
-        $obj = ((Invoke-Gh -Arguments @('api', "repos/$Repository/git/tags/$($obj.sha)")) | ConvertFrom-Json).object
+        $obj = (Invoke-Api GET "$api/git/tags/$($obj.sha)").object
     }
     if ($obj.type -ne 'commit' -or $obj.sha -ne $SourceSha) { throw 'Existing tag points to different source; use a new tag' }
     return $true
 }
-$tagExists = Assert-TagCommit
-$releaseJson = Find-ReleaseJson
-$newRelease = $null -eq $releaseJson
-if (-not $newRelease -and -not $tagExists) {
-    $existing = $releaseJson | ConvertFrom-Json
-    $encodedTarget = [Uri]::EscapeDataString($existing.target_commitish)
-    $targetCommit = ((Invoke-Gh -Arguments @('api', "repos/$Repository/commits/$encodedTarget")) | ConvertFrom-Json).sha
-    if ($targetCommit -ne $SourceSha) { throw 'Existing draft targets different source; use a new tag' }
-}
-if ($newRelease) {
-    # A draft is left for diagnosis if upload fails; nothing incomplete is newly published.
-    $notes = "Windows x64 NSIS installer only. Source: $SourceSha. SHA256 ($assetName): $hash. Unsigned installer; WebView2 is required."
-    try {
-        [void](Invoke-Gh -Arguments @('release', 'create', $Tag, '--repo', $Repository, '--target', $SourceSha, '--title', "MD Reader $Tag (Windows x64)", '--notes', $notes, '--draft'))
-    } catch {
-        # Creation can succeed remotely even if its response is lost; reconcile before failing.
-        $releaseJson = Find-ReleaseJson
-        if ($null -eq $releaseJson) { throw }
+
+function Assert-ReleaseSource($Release) {
+    if (-not $Release.id -or $Release.tag_name -cne $Tag) { throw 'Release identity mismatch' }
+    if (-not (Assert-TagCommit)) {
+        if (-not $Release.draft) { throw 'Published release has no tag' }
+        $target = [Uri]::EscapeDataString($Release.target_commitish)
+        if ((Invoke-Api GET "$api/commits/$target").sha -ne $SourceSha) { throw 'Existing draft targets different source; use a new tag' }
     }
 }
-# Reconcile the draft target again after creation (including a lost create response).
-$beforeUpload = (Find-ReleaseJson -Required) | ConvertFrom-Json
-$releaseId = $beforeUpload.id
-if (-not (Assert-TagCommit)) {
-    $encodedTarget = [Uri]::EscapeDataString($beforeUpload.target_commitish)
-    $targetCommit = ((Invoke-Gh -Arguments @('api', "repos/$Repository/commits/$encodedTarget")) | ConvertFrom-Json).sha
-    if ($targetCommit -ne $SourceSha) { throw 'Draft source changed; refusing upload' }
-}
-[void](Invoke-Gh -Arguments @('release', 'upload', $Tag, $asset, '--repo', $Repository, '--clobber'))
-$release = (Invoke-Gh -Arguments @('api', "repos/$Repository/releases/$releaseId")) | ConvertFrom-Json
-$uploaded = @($release.assets | Where-Object { $_.name -eq $assetName })
-if ($uploaded.Count -ne 1 -or $uploaded[0].size -ne $size -or $uploaded[0].state -ne 'uploaded') { throw 'Uploaded asset verification failed' }
-if ($uploaded[0].digest -and $uploaded[0].digest -ne "sha256:$hash") { throw 'Uploaded asset SHA256 mismatch' }
+
+$files = @(Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe' -File)
+if ($files.Count -ne 1 -or $files[0].Length -eq 0) { throw 'Expected exactly one non-empty NSIS installer EXE' }
+$asset = $files[0].FullName
+$assetName = "MD-Reader-$Tag-windows-x64-setup.exe"
+$size = $files[0].Length
+$hash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
 [void](Assert-TagCommit)
-# Existing releases keep their title/notes/prerelease state. Only this named EXE is replaced.
-if ($release.draft) {
-    [void](Invoke-Gh -Arguments @('release', 'edit', $Tag, '--repo', $Repository, '--target', $SourceSha, '--draft=false'))
+$release = Find-Release
+if ($null -eq $release) {
+    $body = @{ tag_name=$Tag; target_commitish=$SourceSha; name="MD Reader $Tag (Windows x64)"; draft=$true; prerelease=$false; body="Windows x64 NSIS installer. Source: $SourceSha. SHA256 ($assetName): $hash. Unsigned; WebView2 required." }
+    for ($attempt=1; $attempt -le 5; $attempt++) {
+        try {
+            # POST returns the draft JSON including its numeric ID. Keep that response.
+            $release = Invoke-Api POST "$api/releases" -Body $body -Attempts 1
+            break
+        } catch {
+            $creationError = $_
+            # A lost response may still have created a draft. Reconcile before resending.
+            for ($probe=1; $probe -le 5; $probe++) {
+                $release = Find-Release
+                if ($release) { break }
+                if ($probe -lt 5) { Start-Sleep -Seconds ([Math]::Pow(2, $probe)) }
+            }
+            if ($release) { break }
+            if ($attempt -eq 5) { throw $creationError }
+            Write-Warning 'Draft creation failed and no matching release was found; retrying creation'
+        }
+    }
 }
-if (-not (Assert-TagCommit)) { throw 'Published release tag is missing' }
-$verified = (Invoke-Gh -Arguments @('api', "repos/$Repository/releases/$releaseId")) | ConvertFrom-Json
+Assert-ReleaseSource $release
+$releaseId = $release.id
+Write-Host "Release ID: $releaseId; tag: $Tag; source: $SourceSha"
+$releaseUri = "$api/releases/$releaseId"
+$release = Invoke-Api GET $releaseUri
+Assert-ReleaseSource $release
+
+# Replace only the named EXE. Each retry reconciles a possibly completed upload first.
+$uploaded = $null
+for ($attempt=1; $attempt -le 5; $attempt++) {
+    $release = Invoke-Api GET $releaseUri
+    $existing = @($release.assets | Where-Object { $_.name -ceq $assetName })
+    if ($existing.Count -gt 1) { throw 'Duplicate installer assets' }
+    if ($existing.Count -eq 1 -and $existing[0].state -eq 'uploaded' -and $existing[0].size -eq $size -and $existing[0].digest -eq "sha256:$hash") {
+        $uploaded = $existing[0]; break
+    }
+    foreach ($item in $existing) { [void](Invoke-Api DELETE "$api/releases/assets/$($item.id)" -AllowNotFound) }
+    try {
+        $uri = "$uploadsApi/releases/$releaseId/assets?name=$([Uri]::EscapeDataString($assetName))"
+        $uploaded = Invoke-Api POST $uri -File $asset -Attempts 1
+        break
+    } catch {
+        if ($attempt -eq 5) { throw }
+        Write-Warning "Asset upload failed ($attempt/5); reconciling by Release ID before retry"
+        Start-Sleep -Seconds ([Math]::Min(30, [Math]::Pow(2, $attempt)))
+    }
+}
+if (-not $uploaded -or $uploaded.name -cne $assetName -or $uploaded.size -ne $size -or $uploaded.state -ne 'uploaded') { throw 'Uploaded asset verification failed' }
+if ($uploaded.digest -and $uploaded.digest -ne "sha256:$hash") { throw 'Uploaded asset SHA256 mismatch' }
+$release = Invoke-Api GET $releaseUri
+Assert-ReleaseSource $release
+if ($release.draft) {
+    $release = Invoke-Api PATCH $releaseUri -Body @{ draft=$false; target_commitish=$SourceSha }
+}
+$verified = Invoke-Api GET $releaseUri
 if ($verified.draft) { throw 'Release remained a draft' }
+if ($verified.id -ne $releaseId -or $verified.tag_name -cne $Tag) { throw 'Published release identity mismatch' }
+if (-not (Assert-TagCommit)) { throw 'Published release tag is missing' }
 @"
 ## Windows x64 release
 - Release: $($verified.html_url)
