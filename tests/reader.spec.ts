@@ -10,6 +10,11 @@ async function setup(
       const callbacks = new Map<number, (event: unknown) => void>();
       const events = new Map<string, number>();
       const state = {
+        reveals: [] as {
+          dark: boolean;
+          hasUI: boolean;
+          hasDocument: boolean;
+        }[],
         active: 0,
         peak: 0,
         reads: [] as string[],
@@ -41,6 +46,14 @@ async function setup(
             return `http://asset.localhost/${encodeURIComponent(path)}`;
           },
           async invoke(command: string, args: Record<string, unknown> = {}) {
+            if (command === "reveal_main_window") {
+              state.reveals.push({
+                dark: Boolean(args.dark),
+                hasUI: !!document.querySelector(".reader-shell"),
+                hasDocument: !!document.querySelector(".markdown-body h1"),
+              });
+              return;
+            }
             if (command === "plugin:event|listen") {
               events.set(String(args.event), Number(args.handler));
               return ++id;
@@ -295,4 +308,169 @@ test("MD3 layouts support dark theme, narrow viewport and empty state", async ({
   ).toBeVisible();
   await expect(page.locator(".markdown-body")).toBeEmpty();
   await page.screenshot({ path: "test-results/md3-empty-light.png" });
+});
+
+for (const [saved, system] of [
+  ["dark", "light"],
+  ["light", "dark"],
+] as const) {
+  test(`startup shell paints saved ${saved} theme before the application module`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ colorScheme: system });
+    await page.addInitScript(
+      (theme) => localStorage.setItem("reader-theme", theme),
+      saved
+    );
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/src/main.ts", async (route) => {
+      await held;
+      await route.continue();
+    });
+    const ready = setup(page);
+    try {
+      await expect(page.locator("#startup-shell")).toBeVisible();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", saved);
+      await expect(page.locator(".toolbar")).toHaveCount(0);
+    } finally {
+      release();
+    }
+    await ready;
+    await expect(page.locator("#startup-shell")).toHaveCount(0);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", saved);
+  });
+}
+
+test("disk read starts while lazy parser is still downloading", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/src/reader/document.ts", async (route) => {
+    await held;
+    await route.continue();
+  });
+  const ready = setup(page);
+  try {
+    await expect(page.locator(".toolbar")).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { testState: { reads: string[] } }).testState
+              .reads
+        )
+      )
+      .toContain("C:/docs/first.md");
+    await expect(page.locator(".markdown-body")).toBeEmpty();
+  } finally {
+    release();
+  }
+  await ready;
+  await expect(page.locator(".markdown-body h1")).toHaveText("First");
+});
+
+test("startup survives blocked preferences and exposes recovery if application fails", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = () => {
+      throw new Error("blocked");
+    };
+  });
+  await page.route("**/src/main.ts", (route) => route.abort());
+  await page.goto("/");
+  await expect(page.locator("#startup-shell")).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.getByRole("link", { name: "重新加载" })).toBeVisible({
+    timeout: 12000,
+  });
+});
+
+test("native reveal is sent once after UI and initial document are ready", async ({
+  page,
+}) => {
+  await page.addInitScript(() => localStorage.setItem("reader-theme", "dark"));
+  await setup(page);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { testState: { reveals: unknown[] } }).testState
+            .reveals.length
+      )
+    )
+    .toBe(1);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { testState: { reveals: unknown[] } }).testState
+          .reveals[0]
+    )
+  ).toEqual({ dark: true, hasUI: true, hasDocument: true });
+  await open(page, "C:/docs/second.md");
+  await expect(page.locator(".markdown-body h1")).toHaveText("second");
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { testState: { reveals: unknown[] } }).testState
+          .reveals.length
+    )
+  ).toBe(1);
+});
+
+test("hidden-WebView rAF suspension and slow parser cannot keep the window hidden", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.requestAnimationFrame = () => 1;
+    window.cancelAnimationFrame = () => {};
+  });
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/src/reader/document.ts", async (route) => {
+    await held;
+    await route.continue();
+  });
+  const ready = setup(page);
+  try {
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { testState?: { reveals: unknown[] } })
+              .testState?.reveals.length || 0
+        )
+      )
+      .toBe(1);
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { testState: { reveals: unknown[] } }).testState
+            .reveals[0]
+      )
+    ).toEqual({ dark: false, hasUI: true, hasDocument: false });
+    await expect(page.locator(".reading-area")).toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+  } finally {
+    release();
+  }
+  await ready;
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { testState: { reveals: unknown[] } }).testState
+          .reveals.length
+    )
+  ).toBe(1);
 });

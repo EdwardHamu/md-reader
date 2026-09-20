@@ -1,4 +1,5 @@
 mod reader;
+mod startup;
 
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
@@ -24,11 +25,7 @@ fn deliver_file(app: &tauri::AppHandle, path: String) {
     if let Ok(mut pending) = app.state::<PendingOpen>().0.lock() {
         *pending = Some(path.clone());
     }
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    startup::focus_existing(app);
     let _ = app.emit("md-reader://open-file", path);
 }
 
@@ -49,13 +46,12 @@ pub fn run() {
     let initial = from_args(&std::env::args().collect::<Vec<_>>());
     let app = tauri::Builder::default()
         .manage(PendingOpen(Mutex::new(initial)))
+        .manage(startup::StartupGate::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(path) = from_args(&args) {
                 deliver_file(app, path);
-            } else if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
+            } else {
+                startup::focus_existing(app);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -66,6 +62,7 @@ pub fn run() {
         )
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                .skip_initial_state("main")
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::SIZE
                         | tauri_plugin_window_state::StateFlags::POSITION
@@ -73,9 +70,24 @@ pub fn run() {
                 )
                 .build(),
         )
+        .setup(|app| {
+            // Match the OS until the tiny HTML bootstrap applies the saved reader preference.
+            // The main window stays hidden until frontend readiness or the native watchdog.
+            if let Some(window) = app.get_webview_window("main") {
+                let color = if matches!(window.theme(), Ok(tauri::Theme::Dark)) {
+                    tauri::window::Color(20, 18, 24, 255)
+                } else {
+                    tauri::window::Color(244, 242, 247, 255)
+                };
+                let _ = window.set_background_color(Some(color));
+            }
+            startup::arm_watchdog(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             read_document,
-            take_pending_open_file
+            take_pending_open_file,
+            startup::reveal_main_window
         ])
         .build(tauri::generate_context!())
         .expect("无法启动 MD Reader");

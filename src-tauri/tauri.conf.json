@@ -18,7 +18,8 @@
         "minWidth": 600,
         "minHeight": 400,
         "dragDropEnabled": true,
-        "visible": true
+        "visible": false,
+        "backgroundColor": "#f4f2f7"
       }
     ],
     "security": {

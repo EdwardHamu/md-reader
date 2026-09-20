@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { createWindowReveal } from "./reader/reveal";
 import { createLatestLoader } from "./reader/latest";
 import {
   isMarkdownPath,
@@ -87,10 +88,14 @@ function saved(key: string): string | null {
     return null;
   }
 }
+const themePreference = saved("reader-theme");
 const dark = ref(
-  saved("reader-theme") === "dark" ||
-    (!saved("reader-theme") &&
+  themePreference === "dark" ||
+    (themePreference !== "light" &&
       window.matchMedia("(prefers-color-scheme: dark)").matches)
+);
+const startupReveal = createWindowReveal(() =>
+  invoke("reveal_main_window", { dark: dark.value })
 );
 const fontSize = ref(
   Math.max(12, Math.min(28, Number(saved("reader-font-size")) || 17))
@@ -104,7 +109,8 @@ function savePreferences() {
     /* Reading still works with unavailable preference storage. */
   }
 }
-savePreferences();
+// No synchronous preference writes on the first-render critical path.
+document.documentElement.dataset.theme = dark.value ? "dark" : "light";
 function changeFont(delta: number) {
   fontSize.value = Math.max(12, Math.min(28, fontSize.value + delta));
   savePreferences();
@@ -123,11 +129,15 @@ function clearDocument() {
 const loader = createLatestLoader(
   async (request: OpenRequest) => {
     // Parser/highlighting are absent from the startup chunk. No worker/second JS heap.
-    const renderer = await import("./reader/document");
-    const data = await invoke<DocumentData>("read_document", {
-      path: request.path,
-    });
-    return { data, renderer };
+    // Start disk IPC and the lazy parser together, rather than paying both waits in series.
+    // Settle BOTH even on failure: never release the latest-only queue while disk I/O is in flight.
+    const [renderer, data] = await Promise.allSettled([
+      import("./reader/document"),
+      invoke<DocumentData>("read_document", { path: request.path }),
+    ]);
+    if (data.status === "rejected") throw data.reason;
+    if (renderer.status === "rejected") throw renderer.reason;
+    return { data: data.value, renderer: renderer.value };
   },
   ({ data, renderer }, request) => {
     if (!body.value) return;
@@ -138,9 +148,15 @@ const loader = createLatestLoader(
       body.value.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")
     );
     currentFile.value = data.path;
+    if (!performance.getEntriesByName("reader:first-document").length) {
+      performance.mark("reader:first-document");
+    }
     if (body.value.parentElement) body.value.parentElement.scrollTop = 0;
     if (request.hash) scrollToHash(body.value, request.hash);
-    void nextTick(schedulePosition);
+    void nextTick(() => {
+      schedulePosition();
+      startupReveal.ready();
+    });
     // Source + HTML are not stored in refs, tab objects, a history or localStorage.
     document.title = `${data.path.replace(/\\/g, "/").split("/").pop()} — MD Reader`;
   },
@@ -149,6 +165,7 @@ const loader = createLatestLoader(
   },
   () => {
     loading.value = false;
+    void nextTick(() => startupReveal.ready());
   }
 );
 function loadFile(path: string, hash = "") {
@@ -245,36 +262,43 @@ async function register(subscription: Promise<UnlistenFn>) {
   else cleanup.push(unlisten);
 }
 onMounted(async () => {
+  startupReveal.start();
   window.addEventListener("keydown", keydown);
   window.addEventListener("resize", schedulePosition);
   try {
-    await register(
-      listen<string>("md-reader://open-file", (event) =>
-        loadFile(event.payload)
-      )
-    );
-    await register(
-      // Only subscribe to drops, not drag-enter/over/leave or the whole Webview class.
-      listen<{ paths: string[] }>(
-        "tauri://drag-drop",
-        (event) => {
-          const path = event.payload.paths.find(isMarkdownPath);
-          if (path) loadFile(path);
-          else error.value = "请拖入 .md / .markdown / .mdx / .txt 文件。";
-        },
-        { target: { kind: "Webview", label: "main" } }
-      )
-    );
-    if (disposed) return;
     const revision = interaction;
+    // Register independent listeners in parallel; pending-open still waits for both.
+    await Promise.all([
+      register(
+        listen<string>("md-reader://open-file", (event) =>
+          loadFile(event.payload)
+        )
+      ),
+      register(
+        listen<{ paths: string[] }>(
+          "tauri://drag-drop",
+          (event) => {
+            const path = event.payload.paths.find(isMarkdownPath);
+            if (path) loadFile(path);
+            else error.value = "请拖入 .md / .markdown / .mdx / .txt 文件。";
+          },
+          { target: { kind: "Webview", label: "main" } }
+        )
+      ),
+    ]);
+    if (disposed || interaction !== revision) return;
     const path = await invoke<string | null>("take_pending_open_file");
     if (!disposed && interaction === revision && path) loadFile(path);
   } catch (failure) {
     if (!disposed) error.value = `文件打开服务不可用：${String(failure)}`;
+  } finally {
+    if (!disposed && !loading.value)
+      await nextTick(() => startupReveal.ready());
   }
 });
 onBeforeUnmount(() => {
   disposed = true;
+  startupReveal.dispose();
   loader.dispose();
   find.clear();
   for (const unlisten of cleanup) unlisten();

@@ -10,6 +10,7 @@ export default [
     ignores: [
       "node_modules/**",
       "dist/**",
+      ".startup-benchmark/**",
       "src-tauri/target/**",
       "test-results/**",
       "playwright-report/**",

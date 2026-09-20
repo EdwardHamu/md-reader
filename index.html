@@ -3,10 +3,124 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>MD Reader</title>
+    <!-- Critical paint styles stay inline; no Vue, font, icon or parser dependency. -->
+    <style>
+      :root {
+        color-scheme: light;
+        background: #f4f2f7;
+        color: #1d1b20;
+        --boot-surface: #fffbff;
+        --boot-accent: #6750a4;
+        --boot-tonal: #eaddff;
+        --boot-line: #ded8e5;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        background: #141218;
+        color: #e6e0e9;
+        --boot-surface: #211f26;
+        --boot-accent: #d0bcff;
+        --boot-tonal: #46345f;
+        --boot-line: #494351;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          color-scheme: dark;
+          background: #141218;
+          color: #e6e0e9;
+          --boot-surface: #211f26;
+          --boot-accent: #d0bcff;
+          --boot-tonal: #46345f;
+          --boot-line: #494351;
+        }
+      }
+      body {
+        margin: 0;
+      }
+      .startup {
+        height: 100vh;
+        height: 100dvh;
+        padding: 0 20px 34px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        font:
+          14px "Segoe UI",
+          "Microsoft YaHei",
+          system-ui,
+          sans-serif;
+      }
+      .startup header {
+        height: 82px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
+        font-size: 17px;
+        font-weight: 600;
+      }
+      .startup-icon {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 16px;
+        color: var(--boot-accent);
+        background: var(--boot-tonal);
+      }
+      .startup main {
+        flex: 1;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        border: 1px solid var(--boot-line);
+        border-radius: 24px;
+        background: var(--boot-surface);
+      }
+      .startup h1 {
+        margin: 18px 0 8px;
+        font-size: 22px;
+        font-weight: 500;
+      }
+      .startup p {
+        margin: 8px 0 20px;
+        font-size: 13px;
+      }
+      .startup a {
+        color: var(--boot-accent);
+        padding: 12px 20px;
+        border: 1px solid var(--boot-line);
+        border-radius: 24px;
+      }
+      .startup a:focus-visible {
+        outline: 3px solid var(--boot-accent);
+        outline-offset: 3px;
+      }
+      .startup noscript {
+        padding: 16px;
+        text-align: center;
+      }
+    </style>
+    <!-- Classic, tiny local asset: applies the saved theme before body is painted. -->
+    <script src="/startup.js"></script>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="startup" id="startup-shell" role="status" aria-live="polite">
+        <header>
+          <span class="startup-icon" aria-hidden="true">M↓</span>MD Reader
+        </header>
+        <main>
+          <span class="startup-icon" aria-hidden="true">M↓</span>
+          <h1>你的专注阅读空间</h1>
+          <p id="startup-message">正在准备阅读界面…</p>
+          <a id="startup-retry" href="" hidden>重新加载</a>
+          <noscript>请启用 JavaScript 后重新打开 MD Reader。</noscript>
+        </main>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
