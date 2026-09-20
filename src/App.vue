@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+} from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -13,6 +20,9 @@ import {
 } from "./reader/paths";
 import { useFind } from "./reader/find";
 import type { Heading } from "./reader/document";
+
+import ReaderIcon from "./components/ReaderIcon.vue";
+import DocumentOutline from "./components/DocumentOutline.vue";
 
 interface DocumentData {
   path: string;
@@ -28,6 +38,37 @@ const currentFile = ref("");
 const loading = ref(false);
 const error = ref("");
 const tocVisible = ref(true);
+const readingArea = shallowRef<HTMLElement | null>(null);
+const activeId = ref("");
+const progress = ref(0);
+const fileName = computed(
+  () =>
+    currentFile.value.replace(/\\/g, "/").split("/").pop() || "开启一段专注时光"
+);
+let headingNodes: HTMLElement[] = [];
+let scrollFrame = 0;
+function updatePosition() {
+  scrollFrame = 0;
+  const area = readingArea.value;
+  if (!area || !currentFile.value) return;
+  const range = area.scrollHeight - area.clientHeight;
+  progress.value = range > 0 ? Math.round((area.scrollTop / range) * 100) : 100;
+  const top = area.getBoundingClientRect().top + 48;
+  let left = 0,
+    right = headingNodes.length - 1,
+    index = 0;
+  while (left <= right) {
+    const middle = (left + right) >> 1;
+    if (headingNodes[middle].getBoundingClientRect().top <= top) {
+      index = middle;
+      left = middle + 1;
+    } else right = middle - 1;
+  }
+  activeId.value = headingNodes[index]?.id || "";
+}
+function schedulePosition() {
+  if (!scrollFrame) scrollFrame = requestAnimationFrame(updatePosition);
+}
 const findInput = shallowRef<HTMLInputElement | null>(null);
 const find = useFind(body);
 const {
@@ -71,6 +112,11 @@ function changeFont(delta: number) {
 function clearDocument() {
   find.reset(); // Ranges must be released before detaching their DOM.
   headings.value = [];
+  headingNodes = [];
+  activeId.value = "";
+  progress.value = 0;
+  cancelAnimationFrame(scrollFrame);
+  scrollFrame = 0;
   body.value?.replaceChildren();
   currentFile.value = "";
 }
@@ -88,9 +134,13 @@ const loader = createLatestLoader(
     const result = renderer.buildDocument(data.source, data.path);
     body.value.replaceChildren(result.fragment);
     headings.value = result.headings;
+    headingNodes = Array.from(
+      body.value.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")
+    );
     currentFile.value = data.path;
     if (body.value.parentElement) body.value.parentElement.scrollTop = 0;
     if (request.hash) scrollToHash(body.value, request.hash);
+    void nextTick(schedulePosition);
     // Source + HTML are not stored in refs, tab objects, a history or localStorage.
     document.title = `${data.path.replace(/\\/g, "/").split("/").pop()} — MD Reader`;
   },
@@ -144,6 +194,8 @@ async function showFind() {
 }
 function jump(id: string) {
   if (body.value) scrollToHash(body.value, id);
+  activeId.value = id;
+  schedulePosition();
 }
 function clickDocument(event: MouseEvent) {
   const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]");
@@ -194,6 +246,7 @@ async function register(subscription: Promise<UnlistenFn>) {
 }
 onMounted(async () => {
   window.addEventListener("keydown", keydown);
+  window.addEventListener("resize", schedulePosition);
   try {
     await register(
       listen<string>("md-reader://open-file", (event) =>
@@ -226,6 +279,7 @@ onBeforeUnmount(() => {
   find.clear();
   for (const unlisten of cleanup) unlisten();
   window.removeEventListener("keydown", keydown);
+  window.removeEventListener("resize", schedulePosition);
   clearDocument();
 });
 </script>
@@ -233,59 +287,86 @@ onBeforeUnmount(() => {
 <template>
   <div class="reader-shell">
     <header class="toolbar">
-      <strong class="brand">MD Reader <small>只读</small></strong>
-      <button type="button" title="打开文件 (Ctrl+O)" @click="chooseFile">
-        打开
-      </button>
-      <button
-        type="button"
-        title="显示/隐藏目录"
-        :aria-pressed="tocVisible"
-        @click="tocVisible = !tocVisible"
-      >
-        目录
-      </button>
-      <button type="button" title="文内查找 (Ctrl+F)" @click="showFind">
-        查找
-      </button>
-      <span class="file-name" :title="currentFile">{{
-        currentFile.replace(/\\/g, "/").split("/").pop() || "单文档阅读"
-      }}</span>
-      <button
-        type="button"
-        title="减小字号"
-        aria-label="减小字号"
-        @click="changeFont(-1)"
-      >
-        A−
-      </button>
-      <button
-        type="button"
-        title="增大字号"
-        aria-label="增大字号"
-        @click="changeFont(1)"
-      >
-        A+
-      </button>
-      <button
-        type="button"
-        :aria-pressed="dark"
-        title="切换明暗主题"
-        @click="
-          dark = !dark;
-          savePreferences();
-        "
-      >
-        {{ dark ? "浅色" : "深色" }}
-      </button>
-      <button
-        type="button"
-        title="关闭文档 (Ctrl+W)"
-        :disabled="!currentFile && !loading"
-        @click="closeDocument"
-      >
-        关闭
-      </button>
+      <div class="brand">
+        <span class="brand-symbol"><ReaderIcon name="book" :size="24" /></span>
+        <div><strong>MD Reader</strong><small>让阅读，回归简单</small></div>
+      </div>
+      <div class="toolbar-actions">
+        <button
+          class="filled-button"
+          type="button"
+          title="打开文件 (Ctrl+O)"
+          @click="chooseFile"
+        >
+          <ReaderIcon name="folder" /><span>打开</span>
+        </button>
+        <button
+          class="tonal-button"
+          type="button"
+          title="显示/隐藏目录"
+          :aria-pressed="tocVisible"
+          aria-controls="document-outline"
+          @click="tocVisible = !tocVisible"
+        >
+          <ReaderIcon name="list" /><span>目录</span>
+        </button>
+        <button
+          class="icon-button"
+          type="button"
+          title="文内查找 (Ctrl+F)"
+          aria-label="打开文内查找"
+          @click="showFind"
+        >
+          <ReaderIcon name="search" />
+        </button>
+      </div>
+      <span class="file-name" :title="currentFile">{{ fileName }}</span>
+      <div class="reading-tools">
+        <div class="font-control">
+          <button
+            type="button"
+            title="减小字号"
+            aria-label="减小字号"
+            :disabled="fontSize <= 12"
+            @click="changeFont(-1)"
+          >
+            A−
+          </button
+          ><span title="当前字号">{{ fontSize }}</span
+          ><button
+            type="button"
+            title="增大字号"
+            aria-label="增大字号"
+            :disabled="fontSize >= 28"
+            @click="changeFont(1)"
+          >
+            A+
+          </button>
+        </div>
+        <button
+          class="icon-button"
+          type="button"
+          :aria-pressed="dark"
+          title="切换明暗主题"
+          aria-label="切换明暗主题"
+          @click="
+            dark = !dark;
+            savePreferences();
+          "
+        >
+          <ReaderIcon :name="dark ? 'sun' : 'moon'" />
+        </button>
+        <button
+          class="icon-button"
+          type="button"
+          title="关闭文档 (Ctrl+W)"
+          aria-label="关闭文档"
+          :disabled="!currentFile && !loading"
+          @click="closeDocument"
+        >
+          <ReaderIcon name="close" />
+        </button>
+      </div>
     </header>
     <form
       v-if="findVisible"
@@ -320,31 +401,45 @@ onBeforeUnmount(() => {
       {{ error }} <button type="button" @click="error = ''">知道了</button>
     </div>
     <div class="workspace">
-      <aside
+      <DocumentOutline
         v-if="tocVisible && headings.length"
-        class="toc"
-        aria-label="文档目录"
+        id="document-outline"
+        :headings="headings"
+        :active-id="activeId"
+        @jump="jump"
+      />
+      <main
+        ref="readingArea"
+        class="reading-area"
+        :aria-busy="loading"
+        @scroll.passive="schedulePosition"
+        @load.capture="schedulePosition"
       >
-        <h2>
-          文档目录 <small>{{ headings.length }}</small>
-        </h2>
-        <a
-          v-for="heading in headings"
-          :key="heading.id"
-          :href="`#${heading.id}`"
-          :style="{ paddingLeft: `${12 + (heading.level - 1) * 12}px` }"
-          @click.prevent="jump(heading.id)"
-        >{{ heading.text || "无标题" }}</a
-        >
-      </aside>
-      <main class="reading-area" :aria-busy="loading">
-        <div v-if="loading" class="empty" role="status">正在读取…</div>
+        <div v-if="loading" class="empty" role="status">
+          <span class="loading-ring" aria-hidden="true"></span>
+          <h2>正在展开你的文档…</h2>
+          <p>留一点时间，给下一次发现。</p>
+        </div>
         <div v-else-if="!currentFile" class="empty">
-          <div class="empty-mark">M↓</div>
+          <div class="empty-mark"><ReaderIcon name="book" :size="52" /></div>
+          <span class="eyebrow">YOUR QUIET READING SPACE</span>
           <h1>专注阅读 Markdown</h1>
-          <p>打开或拖入一份文档，即刻开始阅读。</p>
-          <button type="button" @click="chooseFile">打开文档</button>
+          <p>
+            少一点干扰，多一点沉浸。<br />打开或拖入一份文档，即刻开始阅读。
+          </p>
+          <button class="filled-button" type="button" @click="chooseFile">
+            <ReaderIcon name="folder" />打开文档<span class="shortcut"
+            >Ctrl O</span
+            >
+          </button>
+          <div class="empty-features">
+            <span>本地只读</span><span>多级目录</span><span>明暗主题</span>
+          </div>
           <small>UTF-8 · 最大 8 MiB · 不编辑、不扫描目录</small>
+        </div>
+        <div v-if="currentFile" class="document-meta">
+          <span class="eyebrow">MARKDOWN DOCUMENT</span
+          ><span class="readonly-chip">只读 · 安心阅读</span>
         </div>
         <!-- This subtree belongs to the sanitized DOM renderer, not a v-html/source cache. -->
         <article
@@ -355,5 +450,16 @@ onBeforeUnmount(() => {
         ></article>
       </main>
     </div>
+    <footer class="status-bar">
+      <span class="status-dot" aria-hidden="true"></span
+      ><span>{{
+        loading ? "正在读取" : currentFile ? "本地文档 · 只读模式" : "准备就绪"
+      }}</span
+      ><span class="status-hint">Ctrl O 打开 · Ctrl F 查找</span
+      ><span v-if="currentFile" class="reading-progress"
+      >{{ progress }}%<span class="progress-track" aria-hidden="true"
+      ><span :style="{ width: `${progress}%` }"></span></span
+      ></span>
+    </footer>
   </div>
 </template>

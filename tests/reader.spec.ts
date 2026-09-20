@@ -233,3 +233,66 @@ test("read failure is recoverable and preferences do not re-render document", as
   await expect(page.locator(".markdown-body h1")).toHaveText("recovered");
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("fine outline supports H1–H6, collapse, filtering and active navigation", async ({
+  page,
+}) => {
+  await setup(
+    page,
+    "# Root\n\nIntro\n\n## Chapter\n\nText\n\n### Detail\n\n#### Options\n\n##### Advanced\n\n###### Deep target\n\nEnd\n\n## Other\n\n" +
+      "Paragraph.\n\n".repeat(30)
+  );
+  await expect(page.locator(".toc a")).toHaveCount(7);
+  await page.getByLabel("目录标题层级").selectOption("3");
+  await expect(page.locator(".toc a")).toHaveCount(4);
+  await page.getByLabel("目录标题层级").selectOption("6");
+  await page.getByRole("button", { name: "折叠 Chapter", exact: true }).click();
+  await expect(page.locator(".toc a")).toHaveCount(3);
+  await page.getByLabel("筛选目录").fill("Deep target");
+  await expect(page.locator(".toc a")).toHaveCount(6);
+  await expect(page.getByLabel("目录标题层级")).toBeDisabled();
+  await page.locator(".toc a").filter({ hasText: "Deep target" }).click();
+  await expect(page.locator(".toc a[aria-current='location']")).toContainText(
+    "Deep target"
+  );
+  await page.getByLabel("筛选目录").fill("not present");
+  await expect(page.locator(".toc-empty")).toContainText("没有找到");
+  await page.getByRole("button", { name: "清空目录筛选" }).click();
+  await page.getByRole("button", { name: "展开", exact: true }).click();
+  await expect(page.locator(".toc a")).toHaveCount(7);
+  await page.getByRole("button", { name: "折叠", exact: true }).click();
+  await expect(page.locator(".toc a")).toHaveCount(1);
+  await open(page, "C:/docs/second.md");
+  await expect(page.locator(".toc a")).toHaveCount(1);
+  await expect(page.locator(".toc a")).toContainText("second");
+});
+
+test("MD3 layouts support dark theme, narrow viewport and empty state", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByTitle("打开文件 (Ctrl+O)")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth
+    )
+  ).toBe(true);
+  await page.getByTitle("显示/隐藏目录").click();
+  await expect(page.locator(".toc")).toHaveCount(0);
+  await page.getByTitle("显示/隐藏目录").click();
+  await expect(page.locator(".toc")).toBeVisible();
+  await page.getByTitle("切换明暗主题").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.screenshot({ path: "test-results/md3-mobile-dark.png" });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.getByTitle("切换明暗主题").click();
+  await page.screenshot({ path: "test-results/md3-reading-light.png" });
+  await page.getByTitle("关闭文档 (Ctrl+W)").click();
+  await expect(
+    page.getByRole("heading", { name: "专注阅读 Markdown" })
+  ).toBeVisible();
+  await expect(page.locator(".markdown-body")).toBeEmpty();
+  await page.screenshot({ path: "test-results/md3-empty-light.png" });
+});

@@ -151,3 +151,38 @@ test("a failed current read reports once and a subsequent request still works", 
   assert.equal(errors.length, 1);
   assert.deepEqual(committed, ["good"]);
 });
+
+test("outline: skipped levels, collapse, depth and search context", async () => {
+  const { buildOutline, filterOutline } =
+    await import("../src/reader/outline.ts");
+  const entries = buildOutline([
+    { id: "a", text: "Overview", level: 1 },
+    { id: "b", text: "配置", level: 3 },
+    { id: "c", text: "详细参数", level: 6 },
+    { id: "d", text: "Next", level: 2 },
+    { id: "e", text: "End", level: 1 },
+  ]);
+  assert.deepEqual(
+    entries.map((entry) => entry.depth),
+    [0, 1, 2, 1, 0]
+  );
+  assert.deepEqual(
+    entries.map((entry) => entry.children),
+    [true, true, false, false, false]
+  );
+  assert.deepEqual(
+    filterOutline(entries, 6, new Set(["b"]), "").map((e) => e.id),
+    ["a", "b", "d", "e"]
+  );
+  assert.deepEqual(
+    filterOutline(entries, 2, new Set(), "").map((e) => e.id),
+    ["a", "d", "e"]
+  );
+  assert.deepEqual(
+    filterOutline(entries, 1, new Set(["a"]), "参数").map((e) => e.id),
+    ["a", "b", "c"]
+  );
+  assert.equal(filterOutline(entries, 6, new Set(), "不存在").length, 0);
+  assert.equal(filterOutline(entries, 6, new Set(), "overview")[0].id, "a");
+  assert.deepEqual(buildOutline([]), []);
+});
