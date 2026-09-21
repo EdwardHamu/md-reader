@@ -1007,3 +1007,13 @@ select {
     scroll-behavior: auto !important;
   }
 }
+
+/* Virtual surfaces have one scroll-anchoring owner (the height index). */
+.reading-area { overflow-anchor: none; }
+.virtual-spacer { pointer-events: none; }
+.virtual-block { display: flow-root; min-height: 1px; }
+.virtual-block[data-block="0"] > :first-child { margin-top: 0; }
+.virtual-block img { max-width: 100%; }
+.toc-virtual .toc-row { height: 42px; margin-bottom: 0; overflow: hidden; }
+.toc-virtual .toc-row a { white-space: nowrap; overflow: hidden; }
+.toc-virtual .toc-row a > span:last-child { overflow: hidden; text-overflow: ellipsis; }

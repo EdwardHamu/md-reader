@@ -6,6 +6,7 @@ import { computed, shallowRef } from "vue";
 export interface JumpEntry {
   path: string;
   scrollTop: number;
+  anchor?: { block: number; offset: number };
 }
 
 const MAX_ENTRIES = 100;

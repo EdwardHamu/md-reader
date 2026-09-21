@@ -57,6 +57,7 @@ md.use(taskLists, { enabled: false });
 
 interface RenderBudget {
   tokenCount: number;
+  limit: number;
 }
 
 // Guard allocations while parsing, not just after creating a potentially huge token tree.
@@ -70,8 +71,8 @@ function budgetTokens(
     configurable: true,
     value: (...added: Token[]) => {
       env.tokenCount += added.length;
-      if (env.tokenCount > MAX_TOKENS)
-        throw new Error("解析超过 60000 个语法节点，请拆分后阅读。");
+      if (env.tokenCount > env.limit)
+        throw new Error(`解析超过 ${env.limit} 个语法节点，请拆分后阅读。`);
       return Array.prototype.push.apply(tokens, added);
     },
   });
@@ -89,47 +90,56 @@ md.block.parse = (source, parser, env, tokens) =>
 md.inline.parse = (source, parser, env, tokens) =>
   budgetTokens(tokens, env, () => parseInline(source, parser, env, tokens));
 
-/** Raw HTML is intentionally NOT trusted: only mount through document.ts. */
-export function renderMarkdown(source: string): string {
-  // Preserve front matter as text without loading a YAML parser or interpreting tags.
+/** Raw HTML is intentionally NOT trusted: only mount through document.ts.
+ * Parse once (references, duplicate slugs and footnotes keep document-wide context),
+ * then render complete top-level token groups rather than one giant HTML string.
+ */
+export function* renderMarkdownChunks(
+  source: string,
+  limits = { tokens: 400_000, lines: 200_000, tags: 400_000 }
+): Generator<string> {
+  if (source.length > 8 * 1024 * 1024) throw new Error("文档超过 8 Mi 字符预算。");
   const normalized = source.replace(/^\uFEFF/, "");
-  const matter = /^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.exec(
-    normalized
-  );
+  const matter = /^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.exec(normalized);
   const body = matter ? normalized.slice(matter[0].length) : normalized;
-  // StateBlock creates line-index arrays before tokenization; bound those too.
   let lines = 1;
-  for (
-    let at = body.indexOf("\n");
-    at !== -1;
-    at = body.indexOf("\n", at + 1)
-  ) {
-    if (++lines > 60_000) throw new Error("文档超过 60000 行，请拆分后阅读。");
+  for (let at = body.indexOf("\n"); at !== -1; at = body.indexOf("\n", at + 1)) {
+    if (++lines > limits.lines) throw new Error(`文档超过 ${limits.lines} 行，请拆分后阅读。`);
   }
-  const env: RenderBudget = { tokenCount: 0 };
+  const env: RenderBudget = { tokenCount: 0, limit: limits.tokens };
   const tokens = md.parse(body, env);
   let count = 0;
-  const visit = (items: typeof tokens) => {
+  const visit = (items: Token[]) => {
     for (const token of items) {
-      if (++count > MAX_TOKENS)
-        throw new Error(
-          "文档结构过于复杂（超过 60000 个语法节点），请拆分后阅读。"
-        );
+      if (++count > limits.tokens) throw new Error(`文档结构超过 ${limits.tokens} 个语法节点。`);
       if (token.children) visit(token.children);
     }
   };
   visit(tokens);
-  const html =
-    (matter
-      ? `<pre class="front-matter"><code>${md.utils.escapeHtml(matter[1])}</code></pre>`
-      : "") + md.renderer.render(tokens, md.options, env);
-  if (html.length > MAX_HTML_CHARS)
-    throw new Error("渲染结果超过 12 Mi 字符，请拆分文档后阅读。");
-  // Bound raw HTML tags before DOMPurify constructs a detached DOM (closing tags count too).
-  let tags = 0;
-  for (let at = html.indexOf("<"); at !== -1; at = html.indexOf("<", at + 1)) {
-    if (++tags > 60_000)
-      throw new Error("文档超过 60000 个 HTML 标记，请拆分后阅读。");
+  let characters = 0, tags = 0;
+  function checked(html: string) {
+    characters += html.length;
+    if (characters > MAX_HTML_CHARS) throw new Error("渲染结果超过 12 Mi 字符，请拆分文档后阅读。");
+    for (let at = html.indexOf("<"); at !== -1; at = html.indexOf("<", at + 1)) {
+      if (++tags > limits.tags) throw new Error(`文档超过 ${limits.tags} 个 HTML 标记，请拆分后阅读。`);
+    }
+    return html;
   }
-  return html;
+  if (matter) yield checked(`<pre class="front-matter"><code>${md.utils.escapeHtml(matter[1])}</code></pre>`);
+  let start = 0, depth = 0;
+  for (let i = 0; i < tokens.length; i++) {
+    depth += tokens[i].nesting;
+    if (depth === 0) {
+      yield checked(md.renderer.render(tokens.slice(start, i + 1), md.options, env));
+      start = i + 1;
+    }
+  }
+  if (start < tokens.length) yield checked(md.renderer.render(tokens.slice(start), md.options, env));
+}
+
+// Legacy bounded renderer retained for small callers and budget regression tests.
+export function renderMarkdown(source: string): string {
+  return Array.from(renderMarkdownChunks(source, {
+    tokens: MAX_TOKENS, lines: 60_000, tags: 60_000,
+  })).join("");
 }

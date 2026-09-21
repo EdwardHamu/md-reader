@@ -9,7 +9,10 @@ const SHOW_DELAY = 350;
 const HIDE_DELAY = 250;
 const MAX_NODES = 300;
 
-export function useHoverPreview(root: () => HTMLElement | null) {
+export function useHoverPreview(
+  root: () => HTMLElement | null,
+  resolve?: (hash: string) => HTMLElement | null
+) {
   const visible = shallowRef(false);
   const card = shallowRef<HTMLElement | null>(null);
   const position = shallowRef({ x: 0, y: 0 });
@@ -49,7 +52,7 @@ export function useHoverPreview(root: () => HTMLElement | null) {
   function show(anchor: HTMLAnchorElement, hash: string) {
     const body = root();
     if (!body) return;
-    const target = findAnchor(body, hash);
+    const target = resolve ? resolve(hash) : findAnchor(body, hash);
     if (!target) return;
     const snapshot = clonePreview(target);
     if (!snapshot || !snapshot.childNodes.length) return;
@@ -75,6 +78,7 @@ export function useHoverPreview(root: () => HTMLElement | null) {
   }
 
   function hide() {
+    cancel(); // A click/scroll must also cancel a not-yet-visible preview.
     visible.value = false;
     content.value = null;
   }

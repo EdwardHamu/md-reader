@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, shallowRef, onMounted, onBeforeUnmount, watch } from "vue";
 import type { Heading } from "../reader/document";
 import { buildOutline, filterOutline } from "../reader/outline";
 import ReaderIcon from "./ReaderIcon.vue";
@@ -12,6 +12,21 @@ const entries = computed(() => buildOutline(props.headings));
 const visible = computed(() =>
   filterOutline(entries.value, maxLevel.value, collapsed.value, query.value)
 );
+const nav = shallowRef<HTMLElement | null>(null);
+const scrollTop = ref(0), viewport = ref(600);
+const isVirtual = computed(() => visible.value.length > 100);
+const rowHeight = 42;
+const start = computed(() => isVirtual.value ? Math.max(0, Math.floor(scrollTop.value / rowHeight) - 8) : 0);
+const end = computed(() => isVirtual.value ? Math.min(visible.value.length, Math.ceil((scrollTop.value + viewport.value) / rowHeight) + 8) : visible.value.length);
+const rows = computed(() => visible.value.slice(start.value, end.value));
+let observer: ResizeObserver | undefined;
+onMounted(() => {
+  observer = new ResizeObserver(() => { viewport.value = nav.value?.clientHeight || 600; });
+  if (nav.value) observer.observe(nav.value);
+});
+onBeforeUnmount(() => observer?.disconnect());
+watch(visible, () => { scrollTop.value = 0; if (nav.value) nav.value.scrollTop = 0; });
+function onScroll() { scrollTop.value = nav.value?.scrollTop || 0; }
 watch(
   () => props.headings,
   () => {
@@ -84,9 +99,10 @@ function collapseAll() {
         </button>
       </div>
     </div>
-    <nav class="toc-list" aria-label="章节导航">
+    <nav ref="nav" class="toc-list" :class="{ 'toc-virtual': isVirtual }" aria-label="章节导航" @scroll.passive="onScroll">
+      <div v-if="isVirtual" aria-hidden="true" :style="{ height: `${start * rowHeight}px` }"></div>
       <div
-        v-for="entry in visible"
+        v-for="entry in rows"
         :key="entry.id"
         class="toc-row"
         :class="{ active: entry.id === activeId }"
@@ -112,6 +128,7 @@ function collapseAll() {
         ><span>{{ entry.text || "无标题" }}</span></a
         >
       </div>
+      <div v-if="isVirtual" aria-hidden="true" :style="{ height: `${(visible.length - end) * rowHeight}px` }"></div>
       <p v-if="!visible.length" class="toc-empty">
         {{
           query.trim()

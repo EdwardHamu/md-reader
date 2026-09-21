@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderMarkdown } from "../src/reader/markdown.ts";
+import { renderMarkdown, renderMarkdownChunks } from "../src/reader/markdown.ts";
 import { createLatestLoader } from "../src/reader/latest.ts";
 import {
   fileUrl,
@@ -201,4 +201,57 @@ test("outline: skipped levels, collapse, depth and search context", async () => 
   assert.equal(filterOutline(entries, 6, new Set(), "不存在").length, 0);
   assert.equal(filterOutline(entries, 6, new Set(), "overview")[0].id, "a");
   assert.deepEqual(buildOutline([]), []);
+});
+
+
+test("height index agrees with a linear oracle after arbitrary measurements", async () => {
+  const { HeightIndex } = await import("../src/reader/virtual-index.ts");
+  const values = Array.from({ length: 10000 }, (_, i) => 12 + i % 91);
+  const index = new HeightIndex(values);
+  for (let i = 0; i < values.length; i += 37) { values[i] = 10 + i % 127; index.set(i, values[i]); }
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    assert.equal(index.prefix(i), sum);
+    assert.equal(index.at(sum), i);
+    assert.equal(index.at(sum + values[i] - 0.1), i);
+    sum += values[i];
+  }
+  assert.equal(index.total, sum);
+  assert.equal(index.at(sum + 1000), 9999);
+  assert.deepEqual(new HeightIndex([]).window(0, 600, 600), { start: 0, end: 0 });
+  const window = index.window(sum / 2, 700, 700);
+  assert.ok(index.prefix(window.start) <= sum / 2 - 700);
+  assert.ok(index.prefix(window.end) >= sum / 2 + 1400);
+  assert.ok(window.end - window.start < 100);
+});
+
+test("indexed find includes offscreen Unicode text, literal patterns, inline joins and the cap", async () => {
+  const { findText } = await import("../src/reader/virtual-index.ts");
+  const blocks = Array.from({ length: 10000 }, (_, i) => ({ text: `段落 ${i} 中文🙂` }));
+  blocks[9999].text = "远处 a+b 中文🙂";
+  assert.deepEqual(findText(blocks, "a+b").matches, [{ block: 9999, start: 3, length: 3 }]);
+  assert.equal(findText(blocks, "中文🙂").limited, true);
+  assert.equal(findText(blocks, "中文🙂").matches.length, 1000);
+  assert.equal(findText(blocks, "").matches.length, 0);
+  assert.equal(findText([{ text: "İx" }], "x").matches[0].start, 1);
+});
+
+test("streamed Markdown preserves document-wide references and permits 18000-line documents", () => {
+  const sample = "# Same\n\n[ref][r]\n\n# Same\n\nFoot[^n]\n\n[r]: https://example.com\n[^n]: text\n";
+  assert.equal(Array.from(renderMarkdownChunks(sample)).join(""), renderMarkdown(sample));
+  const long = "# Huge\n\n" + Array.from({ length: 3000 }, (_, i) =>
+    `## Section ${i}\n\nLong paragraph ${"中文🙂 word ".repeat(8)}\n\nSecond paragraph.\n\n`).join("");
+  const chunks = Array.from(renderMarkdownChunks(long));
+  assert.ok(chunks.length > 9000);
+  assert.ok(chunks.at(-1)?.includes("Second paragraph"));
+  assert.throws(() => Array.from(renderMarkdownChunks("\n".repeat(200001))), /200000/);
+});
+
+
+test("find spans virtual slices of one block without crossing semantic boundaries", async () => {
+  const { findText } = await import("../src/reader/virtual-index.ts");
+  assert.deepEqual(findText([{ text: "prefix 中文", group: 1 }, { text: "🙂 suffix", group: 1 }], "中文🙂").matches,
+    [{ block: 0, start: 7, length: 4, endBlock: 1, end: 2 }]);
+  assert.equal(findText([{ text: "one", group: 1 }, { text: "two", group: 2 }], "onetwo").matches.length, 0);
+  assert.equal(findText([{ text: "aa", group: 1 }, { text: "aa", group: 1 }, { text: "aa", group: 1 }], "aaa").matches.length, 2);
 });

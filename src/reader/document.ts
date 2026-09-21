@@ -9,11 +9,13 @@ export interface Heading {
   level: number;
 }
 
-export function buildDocument(
-  source: string,
-  path: string
+export function sanitizeDocumentHtml(
+  html: string,
+  path: string,
+  headings: Heading[] = [],
+  used = new Set<string>()
 ): { fragment: DocumentFragment; headings: Heading[] } {
-  const fragment = DOMPurify.sanitize(renderMarkdown(source), {
+  const fragment = DOMPurify.sanitize(html, {
     RETURN_DOM_FRAGMENT: true,
     USE_PROFILES: { html: true },
     FORBID_TAGS: [
@@ -100,9 +102,7 @@ export function buildDocument(
     copy.setAttribute("aria-label", "复制代码");
     wrap.append(pre, copy);
   }
-  const used = new Set(
-    Array.from(fragment.querySelectorAll("[id]"), (node) => node.id)
-  );
+  for (const node of fragment.querySelectorAll("[id]")) used.add(node.id);
   // Obsidian-style ^block-id markers become element ids for precise jumps.
   let blockAnchors = 0;
   for (const block of fragment.querySelectorAll<HTMLElement>(
@@ -123,12 +123,11 @@ export function buildDocument(
     used.add(split.id);
     ++blockAnchors;
   }
-  const headings: Heading[] = [];
   for (const heading of fragment.querySelectorAll<HTMLHeadingElement>(
     "h1,h2,h3,h4,h5,h6"
   )) {
-    if (headings.length >= 3000)
-      throw new Error("目录超过 3000 个标题，请拆分后阅读。");
+    if (headings.length >= 20_000)
+      throw new Error("目录超过 20000 个标题，请拆分后阅读。");
     if (!heading.id) {
       let id = `reader-heading-${headings.length}`;
       while (used.has(id)) id += "-";
@@ -142,4 +141,8 @@ export function buildDocument(
     });
   }
   return { fragment, headings };
+}
+
+export function buildDocument(source: string, path: string) {
+  return sanitizeDocumentHtml(renderMarkdown(source), path);
 }

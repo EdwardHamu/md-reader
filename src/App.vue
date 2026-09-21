@@ -6,6 +6,7 @@ import {
   onMounted,
   ref,
   shallowRef,
+  watch,
 } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -17,13 +18,13 @@ import {
   isMarkdownPath,
   isSafeExternal,
   resolveLocalLink,
-  scrollToHash,
 } from "./reader/paths";
 import { useFind } from "./reader/find";
 import { useReaderFonts } from "./reader/fonts";
 import { useJumpHistory } from "./reader/history";
 import { useHoverPreview } from "./reader/preview";
 import type { Heading } from "./reader/document";
+import { createVirtualReader, type VirtualReader, type ReadingAnchor } from "./reader/virtual-reader";
 
 import ReaderIcon from "./components/ReaderIcon.vue";
 import DocumentOutline from "./components/DocumentOutline.vue";
@@ -50,7 +51,8 @@ const fileName = computed(
   () =>
     currentFile.value.replace(/\\/g, "/").split("/").pop() || "开启一段专注时光"
 );
-let headingNodes: HTMLElement[] = [];
+let virtualReader: VirtualReader | undefined;
+const virtualized = ref(false);
 let scrollFrame = 0;
 function updatePosition() {
   scrollFrame = 0;
@@ -58,24 +60,13 @@ function updatePosition() {
   if (!area || !currentFile.value) return;
   const range = area.scrollHeight - area.clientHeight;
   progress.value = range > 0 ? Math.round((area.scrollTop / range) * 100) : 100;
-  const top = area.getBoundingClientRect().top + 48;
-  let left = 0,
-    right = headingNodes.length - 1,
-    index = 0;
-  while (left <= right) {
-    const middle = (left + right) >> 1;
-    if (headingNodes[middle].getBoundingClientRect().top <= top) {
-      index = middle;
-      left = middle + 1;
-    } else right = middle - 1;
-  }
-  activeId.value = headingNodes[index]?.id || "";
+  activeId.value = virtualReader?.activeHeading() || "";
 }
 function schedulePosition() {
   if (!scrollFrame) scrollFrame = requestAnimationFrame(updatePosition);
 }
 const findInput = shallowRef<HTMLInputElement | null>(null);
-const find = useFind(body);
+const find = useFind(() => virtualReader);
 const {
   query,
   visible: findVisible,
@@ -140,7 +131,9 @@ function changeFont(delta: number) {
 function clearDocument() {
   find.reset(); // Ranges must be released before detaching their DOM.
   headings.value = [];
-  headingNodes = [];
+  virtualReader?.dispose();
+  virtualReader = undefined;
+  virtualized.value = false;
   activeId.value = "";
   progress.value = 0;
   cancelAnimationFrame(scrollFrame);
@@ -153,37 +146,49 @@ const loader = createLatestLoader(
     // Parser/highlighting are absent from the startup chunk. No worker/second JS heap.
     // Start disk IPC and the lazy parser together, rather than paying both waits in series.
     // Settle BOTH even on failure: never release the latest-only queue while disk I/O is in flight.
+    const revision = interaction;
     const [renderer, data] = await Promise.allSettled([
-      import("./reader/document"),
+      import("./reader/virtual-document"),
       invoke<DocumentData>("read_document", { path: request.path }),
     ]);
     if (data.status === "rejected") throw data.reason;
     if (renderer.status === "rejected") throw renderer.reason;
-    return { data: data.value, renderer: renderer.value };
+    if (disposed || revision !== interaction) throw new DOMException("Document replaced", "AbortError");
+    const model = await renderer.value.buildVirtualDocument(data.value.source, data.value.path,
+      () => disposed || revision !== interaction);
+    return { path: data.value.path, model };
   },
-  ({ data, renderer }, request) => {
-    if (!body.value) return;
-    const result = renderer.buildDocument(data.source, data.path);
-    body.value.replaceChildren(result.fragment);
-    headings.value = result.headings;
-    headingNodes = Array.from(
-      body.value.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6")
-    );
-    currentFile.value = data.path;
+  ({ path, model }, request) => {
+    if (!body.value || !readingArea.value) return;
+    currentFile.value = path;
+    headings.value = model.headings;
+    readingArea.value.scrollTop = 0;
+    virtualReader = createVirtualReader(body.value, readingArea.value, model, () => {
+      find.refresh();
+      schedulePosition();
+    });
+    virtualized.value = virtualReader.virtual;
     if (!performance.getEntriesByName("reader:first-document").length) {
       performance.mark("reader:first-document");
     }
-    if (body.value.parentElement) body.value.parentElement.scrollTop = 0;
-    if (pendingScrollTop >= 0 && body.value.parentElement) {
-      body.value.parentElement.scrollTop = pendingScrollTop;
-      pendingScrollTop = -1;
-    } else if (request.hash) scrollToHash(body.value, request.hash);
+    const view = virtualReader;
+    const restoreTop = pendingScrollTop;
+    const restoreAnchor = pendingAnchor;
+    pendingScrollTop = -1;
+    pendingAnchor = undefined;
     void nextTick(() => {
+      if (virtualReader !== view) return;
+      view.refresh();
+      if (restoreAnchor) view.restore(restoreAnchor);
+      else if (restoreTop >= 0 && readingArea.value) {
+        readingArea.value.scrollTop = restoreTop;
+        view.refresh();
+      } else if (request.hash) view.jump(request.hash);
       schedulePosition();
       startupReveal.ready();
     });
-    // Source + HTML are not stored in refs, tab objects, a history or localStorage.
-    document.title = `${data.path.replace(/\\/g, "/").split("/").pop()} — MD Reader`;
+    // Only serialized blocks/text remain; source, tokens and temporary DOM are released.
+    document.title = `${path.replace(/\\/g, "/").split("/").pop()} — MD Reader`;
   },
   (failure) => {
     error.value = String(failure);
@@ -209,6 +214,7 @@ function closeDocument() {
   preview.dispose();
   history.clear();
   pendingScrollTop = -1;
+  pendingAnchor = undefined;
   clearDocument();
   loading.value = false;
   error.value = "";
@@ -241,29 +247,36 @@ async function showFind() {
 const history = useJumpHistory(
   () =>
     currentFile.value && readingArea.value
-      ? { path: currentFile.value, scrollTop: readingArea.value.scrollTop }
+      ? { path: currentFile.value, scrollTop: readingArea.value.scrollTop, anchor: virtualReader?.capture() }
       : null,
   (entry) => {
     if (entry.path === currentFile.value) {
-      readingArea.value?.scrollTo({ top: entry.scrollTop });
+      if (entry.anchor) virtualReader?.restore(entry.anchor);
+      else readingArea.value?.scrollTo({ top: entry.scrollTop });
       schedulePosition();
     } else {
       pendingScrollTop = entry.scrollTop;
+      pendingAnchor = entry.anchor;
       loadFile(entry.path);
     }
   }
 );
 let pendingScrollTop = -1;
-const preview = useHoverPreview(() => body.value);
+let pendingAnchor: ReadingAnchor | undefined;
+const preview = useHoverPreview(() => body.value, (hash) => virtualReader?.preview(hash) || null);
+watch([fontSize, fonts.fontFamily], () => {
+  void nextTick(() => virtualReader?.invalidate());
+});
 function jump(id: string) {
   history.push();
-  if (body.value) scrollToHash(body.value, id, { smooth: true });
+  virtualReader?.jump(id);
   activeId.value = id;
   schedulePosition();
 }
 async function copyCode(button: HTMLElement) {
   const pre = button.parentElement?.querySelector("pre");
-  const text = pre?.textContent || "";
+  const group = button.closest<HTMLElement>("[data-code-group]")?.dataset.codeGroup;
+  const text = group !== undefined ? virtualReader?.code(Number(group)) || "" : pre?.textContent || "";
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
@@ -301,6 +314,10 @@ function clickDocument(event: MouseEvent) {
   } else
     error.value =
       "只打开 Markdown/文本文件；其他本地附件请使用系统文件管理器。";
+}
+function scrollDocument() {
+  preview.dispose();
+  schedulePosition();
 }
 function hoverDocument(event: MouseEvent) {
   const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]");
@@ -647,7 +664,7 @@ onBeforeUnmount(() => {
         ref="readingArea"
         class="reading-area"
         :aria-busy="loading"
-        @scroll.passive="schedulePosition"
+        @scroll.passive="scrollDocument"
         @load.capture="schedulePosition"
       >
         <div v-if="loading" class="empty" role="status">
@@ -706,7 +723,7 @@ onBeforeUnmount(() => {
     <footer class="status-bar">
       <span class="status-dot" aria-hidden="true"></span
       ><span>{{
-        loading ? "正在读取" : currentFile ? "本地文档 · 只读模式" : "准备就绪"
+        loading ? "正在读取" : currentFile ? (virtualized ? "虚拟阅读 · Ctrl F 全文查找" : "本地文档 · 只读模式") : "准备就绪"
       }}</span
       ><span class="status-hint">Ctrl O 打开 · Ctrl F 查找</span
       ><span v-if="currentFile" class="reading-progress"

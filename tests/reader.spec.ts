@@ -442,6 +442,8 @@ test("hidden-WebView rAF suspension and slow parser cannot keep the window hidde
   });
   const ready = setup(page);
   try {
+    // Wait for navigation to finish before polling window state in the held-parser phase.
+    await expect(page.locator(".toolbar")).toBeVisible();
     await expect
       .poll(() =>
         page.evaluate(
@@ -473,4 +475,161 @@ test("hidden-WebView rAF suspension and slow parser cannot keep the window hidde
           .reveals.length
     )
   ).toBe(1);
+});
+
+
+test("virtual: 18000 lines stay DOM-bounded through scrolling, far search, outline jumps and reopen", async ({ page }) => {
+  test.setTimeout(120000);
+  const source = "# Huge\n\n[Go far](#section-2999)\n\n" + Array.from({ length: 3000 }, (_, i) =>
+    `## Section ${i}\n\n段落 ${i} ${"中文🙂 smooth reading ".repeat(8)}\n\nSecond ${i}${i === 2999 ? " far-unique-needle" : ""}.\n\n`).join("");
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await setup(page, source);
+  await expect(page.locator("article")).toHaveAttribute("data-virtual", "true");
+  await expect(page.locator(".reading-area")).toHaveAttribute("aria-busy", "false");
+  expect(await page.locator(".markdown-body *").count()).toBeLessThan(1500);
+  expect(await page.locator(".toc-row").count()).toBeLessThan(80);
+  await page.getByRole("link", { name: "Go far", exact: true }).click();
+  await expect(page.locator(".markdown-body h2").filter({ hasText: /^Section 2999$/ })).toBeInViewport();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(page.locator(".markdown-body h1")).toBeInViewport();
+  await page.getByTitle("文内查找 (Ctrl+F)").click();
+  await page.getByLabel("文内查找", { exact: true }).fill("far-unique-needle");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 1");
+  await expect(page.locator(".markdown-body p").filter({ hasText: "far-unique-needle" })).toBeInViewport();
+  await page.keyboard.press("Escape");
+  await page.getByLabel("筛选目录").fill("Section 1500");
+  await page.locator(".toc a").filter({ hasText: "Section 1500" }).click();
+  await expect(page.locator(".markdown-body h2").filter({ hasText: /^Section 1500$/ })).toBeInViewport();
+  await page.getByLabel("筛选目录").fill("");
+  const metrics = await page.evaluate(async () => {
+    const area = document.querySelector<HTMLElement>(".reading-area")!;
+    let peak = 0; const frames: number[] = [];
+    let previous = performance.now();
+    for (let i = 0; i < 120; i++) {
+      area.scrollTop += 100;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const now = performance.now(); frames.push(now - previous); previous = now;
+      peak = Math.max(peak, document.querySelectorAll(".markdown-body *").length);
+    }
+    frames.sort((a, b) => a - b);
+    return { peak, p95FrameMs: frames[Math.floor(frames.length * 0.95)], blocks: document.querySelector("article")?.getAttribute("data-blocks") };
+  });
+  console.log("VIRTUAL_SCROLL_METRICS", JSON.stringify({ ...metrics, sourceChars: source.length,
+    sourceLines: source.split("\n").length, browser: page.context().browser()?.version() }));
+  expect(metrics.peak).toBeLessThan(1500);
+  // CI scheduling is not a native frame-rate guarantee. Record timing, gate DOM bounds.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("HeapProfiler.collectGarbage");
+  const before = await cdp.send("Memory.getDOMCounters");
+  for (let i = 0; i < 3; i++) {
+    await page.getByTitle("关闭文档 (Ctrl+W)").click();
+    await expect(page.locator("article")).toBeEmpty();
+    await open(page, "C:/docs/first.md");
+    await expect(page.locator(".markdown-body h1")).toBeInViewport();
+  }
+  await cdp.send("HeapProfiler.collectGarbage");
+  const after = await cdp.send("Memory.getDOMCounters");
+  const virtualHeap = await cdp.send("Runtime.getHeapUsage");
+  console.log("VIRTUAL_REOPEN_DOM", JSON.stringify({ before, after }));
+  expect(after.nodes).toBeLessThan(before.nodes + 500);
+  await page.getByTitle("关闭文档 (Ctrl+W)").click();
+  await expect(page.locator("article")).toBeEmpty();
+  await cdp.send("HeapProfiler.collectGarbage");
+  const closedHeap = await cdp.send("Runtime.getHeapUsage");
+  const closedDOM = await cdp.send("Memory.getDOMCounters");
+  // Same page/parser/IPC fixture, full-body DOM baseline; TOC intentionally omitted.
+  await page.evaluate(async (source) => {
+    const modulePath = "/src/reader/document.ts";
+    const { buildDocument } = await import(modulePath);
+    const body = document.createElement("article");
+    body.id = "full-dom-baseline"; body.className = "markdown-body";
+    body.append(buildDocument(source, "C:/docs/first.md").fragment);
+    document.body.append(body);
+  }, source);
+  await cdp.send("HeapProfiler.collectGarbage");
+  const fullHeap = await cdp.send("Runtime.getHeapUsage");
+  const fullDOM = await cdp.send("Memory.getDOMCounters");
+  console.log("VIRTUAL_MEMORY_BASELINE", JSON.stringify({ virtualHeap, virtualDOM: after, closedHeap, closedDOM, fullHeap, fullDOM }));
+  expect(fullDOM.nodes).toBeGreaterThan(after.nodes * 10);
+  await page.evaluate(() => document.getElementById("full-dom-baseline")?.remove());
+  expect(errors).toEqual([]);
+});
+
+test("virtual: giant code, ordered lists and tables split without truncation; copy stays complete", async ({ page }) => {
+  test.setTimeout(120000);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async (text: string) => { Object.assign(window, { copiedCode: text }); } } });
+  });
+  const code = Array.from({ length: 10000 }, (_, i) => `line${String(i).padStart(5, "0")} 中文🙂`).join("\n") + "\n";
+  const list = Array.from({ length: 1000 }, (_, i) => `1. Ordered ${String(i).padStart(4, "0")}`).join("\n");
+  const table = "| A | B |\n| - | - |\n" + Array.from({ length: 1000 }, (_, i) => `| cell${String(i).padStart(4, "0")} | value |`).join("\n");
+  const nested = Array.from({ length: 1000 }, (_, i) => `nested${String(i).padStart(5, "0")} 中文🙂`).join("\n") + "\n";
+  const quote = "> ```text\n" + nested.trimEnd().split("\n").map((line) => "> " + line).join("\n") + "\n> ```";
+  await setup(page, `# Structured\n\n\`\`\`text\n${code}\`\`\`\n\n${list}\n\n${table}\n\n${quote}`);
+  expect(await page.locator(".markdown-body *").count()).toBeLessThan(1800);
+  await page.locator(".code-copy").first().click();
+  expect(await page.evaluate(() => (window as unknown as { copiedCode: string }).copiedCode)).toBe(code);
+  await page.getByTitle("文内查找 (Ctrl+F)").click();
+  const search = page.getByLabel("文内查找", { exact: true });
+  await search.fill("line09999");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 1");
+  await expect(page.locator(".markdown-body pre").filter({ hasText: "line09999" })).toBeInViewport();
+  await search.fill("Ordered 0999");
+  await expect(page.locator(".markdown-body li").filter({ hasText: "Ordered 0999" })).toHaveAttribute("value", "1000");
+  await search.fill("cell0999");
+  await expect(page.locator(".markdown-body td").filter({ hasText: "cell0999" })).toBeInViewport();
+  expect(await page.locator(".markdown-body *").count()).toBeLessThan(1800);
+  await page.keyboard.press("Control+=");
+  await page.setViewportSize({ width: 800, height: 700 });
+  await expect(page.locator(".markdown-body td").filter({ hasText: "cell0999" })).toBeInViewport();
+  await search.fill("nested00999");
+  const nestedPart = page.locator(".code-block").filter({ has: page.locator("pre", { hasText: "nested00999" }) });
+  await expect(nestedPart).toBeInViewport();
+  await nestedPart.locator(".code-copy").click();
+  expect(await page.evaluate(() => (window as unknown as { copiedCode: string }).copiedCode)).toBe(nested);
+});
+
+test("virtual: offscreen footnote preview is bounded and late construction cannot replace a newer file", async ({ page }) => {
+  test.setTimeout(60000);
+  const source = "# Preview\n\nPeek[^late]\n\n" + "A long middle paragraph.\n\n".repeat(600) + "[^late]: Distant footnote text\n";
+  await setup(page, source);
+  await page.locator(".footnote-ref a").hover();
+  await expect(page.locator(".hover-preview")).toContainText("Distant footnote text");
+  expect(await page.locator(".hover-preview *").count()).toBeLessThan(310);
+  await open(page, "C:/docs/first.md");
+  await open(page, "C:/docs/latest.md");
+  await expect(page.locator(".markdown-body h1")).toHaveText("latest");
+  await expect(page.locator(".hover-preview")).toHaveCount(0);
+  await page.waitForTimeout(300);
+  await expect(page.locator(".markdown-body h1")).toHaveText("latest");
+});
+
+
+test("virtual: cross-slice search and delayed image measurements preserve the viewport anchor", async ({ page }) => {
+  test.setTimeout(60000);
+  const paragraph = "x".repeat(5997) + " needle-cross-boundary " + "z".repeat(500);
+  const source = "# Measurements\n\n" + paragraph + "\n\n" + Array.from({ length: 100 }, (_, i) =>
+    `Paragraph ${i} ${"read ".repeat(12)}\n\n![image ${i}](img.png)\n\n`).join("");
+  await setup(page, source);
+  await page.getByTitle("文内查找 (Ctrl+F)").click();
+  const search = page.getByLabel("文内查找", { exact: true });
+  await search.fill("needle-cross-boundary");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 1");
+  await search.fill("Paragraph 50");
+  await expect(page.locator(".markdown-body p").filter({ hasText: "Paragraph 50" })).toBeInViewport();
+  const before = await page.locator(".markdown-body p").filter({ hasText: "Paragraph 50" }).boundingBox();
+  await page.evaluate(() => {
+    const area = document.querySelector(".reading-area")!.getBoundingClientRect();
+    const image = Array.from(document.querySelectorAll<HTMLImageElement>(".markdown-body img"))
+      .find((image) => image.getBoundingClientRect().bottom < area.top);
+    if (!image) throw new Error("No buffered image above the viewport");
+    image.style.height = "300px";
+  });
+  await page.waitForTimeout(150);
+  const after = await page.locator(".markdown-body p").filter({ hasText: "Paragraph 50" }).boundingBox();
+  expect(Math.abs(after!.y - before!.y)).toBeLessThan(3);
+  await page.getByTitle("显示/隐藏目录").click();
+  await page.keyboard.press("Control+=");
+  await expect(page.locator(".markdown-body p").filter({ hasText: "Paragraph 50" })).toBeInViewport();
 });
