@@ -110,6 +110,77 @@ const open = (page: Page, path: string) =>
     path
   );
 
+
+
+test("keyboard workflow navigates virtual document and live regex", async ({ page }) => {
+  await setup(page, "# Keyboard\n\n" + Array.from({ length: 150 }, (_, i) => `Paragraph ${i} needle-${i}\n\n`).join(""));
+  const area = page.locator(".reading-area");
+  const position = () => area.evaluate((el) => el.scrollTop);
+  await page.keyboard.press("d");
+  await expect.poll(position).toBeGreaterThan(100);
+  await page.keyboard.press("e");
+  await expect.poll(position).toBe(0);
+  await page.keyboard.press("Shift+G");
+  await expect(page.locator(".markdown-body p").filter({ hasText: "Paragraph 149 " })).toBeInViewport();
+  await page.keyboard.press("g");
+  await expect.poll(position).toBeGreaterThan(100);
+  await page.keyboard.press("g");
+  await expect.poll(position).toBe(0);
+  await page.keyboard.press("/");
+  const input = page.getByLabel("正则查找", { exact: true });
+  await expect(input).toBeFocused();
+  await input.fill("needle-(148|149)");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 2");
+  await expect(page.locator(".markdown-body p").filter({ hasText: "Paragraph 148 " })).toBeInViewport();
+  await input.press("Enter");
+  await expect(page.locator(".find-bar output")).toHaveText("2 / 2");
+  await input.press("Shift+Enter");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 2");
+  await input.fill("[");
+  await expect(page.locator(".find-bar [role=alert]")).toContainText("正则表达式无效");
+  await input.fill("(?=.)");
+  await expect(page.locator(".find-bar output")).toHaveText("0 / 0");
+  await expect(page.locator(".find-bar [role=alert]")).toHaveCount(0);
+  await input.press("Escape");
+  await expect(area).toBeFocused();
+  await page.keyboard.type("gg");
+  await expect.poll(position).toBe(0);
+  await page.keyboard.press("Control+f");
+  await expect(page.getByLabel("文内查找", { exact: true })).toBeFocused();
+  await page.getByLabel("文内查找", { exact: true }).fill("needle-(148|149)");
+  await expect(page.locator(".find-bar output")).toHaveText("0 / 0");
+});
+
+test("keyboard workflow ignores editable, modified and composing keys", async ({ page }) => {
+  await setup(page, "# Keyboard\n\n" + "Long paragraph.\n\n".repeat(100));
+  const area = page.locator(".reading-area");
+  await page.getByTitle("文内查找 (Ctrl+F)").click();
+  await page.locator("#find-input").pressSequentially("ggGde/");
+  await expect(page.locator("#find-input")).toHaveValue("ggGde/");
+  expect(await area.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+d");
+  await area.dispatchEvent("keydown", { key: "d", isComposing: true, bubbles: true });
+  expect(await area.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press("d");
+  await expect.poll(() => area.evaluate((el) => el.scrollTop)).toBeGreaterThan(100);
+});
+
+test("regex worker times out pathological queries and recovers", async ({ page }) => {
+  await setup(page, "# Regex\n\n" + "a".repeat(2000) + "!\n");
+  await page.keyboard.press("/");
+  const input = page.getByLabel("正则查找", { exact: true });
+  await input.fill("(a+)+$");
+  await expect(page.locator(".find-bar [role=alert]")).toContainText("超时");
+  await input.fill("a{3}");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 666");
+  await input.fill("(a+)+$");
+  await input.press("Escape");
+  await expect(page.locator(".find-bar")).toHaveCount(0);
+  await page.keyboard.press("/");
+  await page.getByLabel("正则查找", { exact: true }).fill("!");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 1");
+});
 test("opens, derives TOC, highlights, lazily loads images, navigates links and closes", async ({
   page,
 }) => {

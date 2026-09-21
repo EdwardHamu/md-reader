@@ -20,6 +20,7 @@ import {
   resolveLocalLink,
 } from "./reader/paths";
 import { useFind } from "./reader/find";
+import { createReadingKeys, isEditingTarget } from "./reader/keyboard";
 import { useReaderFonts } from "./reader/fonts";
 import { useJumpHistory } from "./reader/history";
 import { useHoverPreview } from "./reader/preview";
@@ -67,6 +68,13 @@ function schedulePosition() {
 }
 const findInput = shallowRef<HTMLInputElement | null>(null);
 const find = useFind(() => virtualReader);
+const readingKeys = createReadingKeys();
+function resetReadingKeys() { readingKeys.reset(); }
+function closeFind() {
+  const restoreFocus = findVisible.value;
+  find.close();
+  if (restoreFocus) readingArea.value?.focus({ preventScroll: true });
+}
 const {
   query,
   visible: findVisible,
@@ -129,6 +137,7 @@ function changeFont(delta: number) {
   savePreferences();
 }
 function clearDocument() {
+  readingKeys.reset();
   find.reset(); // Ranges must be released before detaching their DOM.
   headings.value = [];
   virtualReader?.dispose();
@@ -237,7 +246,12 @@ async function chooseFile() {
     if (!disposed) error.value = String(failure);
   }
 }
-async function showFind() {
+function onFindEnter(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return;
+  event.preventDefault(); find.move(event.shiftKey ? -1 : 1);
+}
+async function showFind(regex = false) {
+  find.regex.value = regex;
   findVisible.value = true;
   await nextTick();
   findInput.value?.focus();
@@ -330,7 +344,27 @@ function leaveDocument(event: MouseEvent) {
   if (link) preview.scheduleHide();
 }
 function keydown(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229) {
+    readingKeys.reset(); return;
+  }
   const mod = event.ctrlKey || event.metaKey;
+  if (mod || event.altKey || isEditingTarget(event.target) || loading.value || !currentFile.value || fontPanelVisible.value) {
+    readingKeys.reset();
+  } else {
+    const command = readingKeys.accept(event.key, event.repeat);
+    if (command || event.key === "g") event.preventDefault();
+    if (command === "search") { void showFind(true); return; }
+    const area = readingArea.value;
+    if (command && area) {
+      preview.hide();
+      if (command === "top" || command === "bottom") {
+        history.push();
+        virtualReader?.restore({ block: command === "top" ? 0 : virtualReader.model.blocks.length - 1, offset: 0 });
+        area.scrollTop = command === "top" ? 0 : area.scrollHeight;
+      } else area.scrollBy({ top: area.clientHeight * (command === "down" ? 0.5 : -0.5), behavior: "instant" });
+      schedulePosition(); return;
+    }
+  }
   const key = event.key.toLowerCase();
   if (mod && key === "o") {
     event.preventDefault();
@@ -344,7 +378,7 @@ function keydown(event: KeyboardEvent) {
   } else if (key === "escape") {
     fontPanelVisible.value = false;
     preview.hide();
-    find.close();
+    closeFind();
   } else if (event.altKey && key === "arrowleft") {
     event.preventDefault();
     history.back();
@@ -376,6 +410,9 @@ function mouseNav(event: MouseEvent) {
 onMounted(async () => {
   startupReveal.start();
   window.addEventListener("keydown", keydown);
+  window.addEventListener("blur", resetReadingKeys);
+  window.addEventListener("focusin", resetReadingKeys);
+  window.addEventListener("pointerdown", resetReadingKeys);
   window.addEventListener("resize", schedulePosition);
   window.addEventListener("mouseup", mouseNav);
   try {
@@ -417,6 +454,9 @@ onBeforeUnmount(() => {
   preview.dispose();
   for (const unlisten of cleanup) unlisten();
   window.removeEventListener("keydown", keydown);
+  window.removeEventListener("blur", resetReadingKeys);
+  window.removeEventListener("focusin", resetReadingKeys);
+  window.removeEventListener("pointerdown", resetReadingKeys);
   window.removeEventListener("resize", schedulePosition);
   window.removeEventListener("mouseup", mouseNav);
   clearDocument();
@@ -454,7 +494,7 @@ onBeforeUnmount(() => {
           type="button"
           title="文内查找 (Ctrl+F)"
           aria-label="打开文内查找"
-          @click="showFind"
+          @click="showFind()"
         >
           <ReaderIcon name="search" />
         </button>
@@ -543,25 +583,27 @@ onBeforeUnmount(() => {
       role="search"
       @submit.prevent="find.move(1)"
     >
-      <label for="find-input">文内查找</label>
+      <label for="find-input">{{ find.regex.value ? "正则查找" : "文内查找" }}</label>
       <input
         id="find-input"
         ref="findInput"
         v-model="query"
         maxlength="256"
         autocomplete="off"
-        placeholder="输入文字"
+        :placeholder="find.regex.value ? '输入正则表达式' : '输入文字'"
+        :aria-invalid="!!find.searchError.value"
         @input="find.schedule"
-        @keydown.enter.prevent="find.move($event.shiftKey ? -1 : 1)"
+        @keydown.enter="onFindEnter"
       />
-      <output aria-live="polite">{{ findCount }}</output>
+      <output aria-live="polite">{{ find.busy.value ? "搜索中…" : findCount }}</output>
+      <small v-if="find.searchError.value" role="alert">{{ find.searchError.value }}</small>
       <button type="button" aria-label="上一个匹配" @click="find.move(-1)">
         ↑
       </button>
       <button type="button" aria-label="下一个匹配" @click="find.move(1)">
         ↓
       </button>
-      <button type="button" aria-label="关闭查找" @click="find.close">
+      <button type="button" aria-label="关闭查找" @click="closeFind">
         关闭
       </button>
       <small v-if="findLimited">仅保留前 1000 个匹配，请缩小关键词范围。</small>
@@ -663,6 +705,8 @@ onBeforeUnmount(() => {
       <main
         ref="readingArea"
         class="reading-area"
+        tabindex="-1"
+        aria-label="文档阅读区：gg 顶端，G 底端，d 下滑，e 上滑，/ 正则查找"
         :aria-busy="loading"
         @scroll.passive="scrollDocument"
         @load.capture="schedulePosition"
@@ -725,7 +769,7 @@ onBeforeUnmount(() => {
       ><span>{{
         loading ? "正在读取" : currentFile ? (virtualized ? "虚拟阅读 · Ctrl F 全文查找" : "本地文档 · 只读模式") : "准备就绪"
       }}</span
-      ><span class="status-hint">Ctrl O 打开 · Ctrl F 查找</span
+      ><span class="status-hint" title="gg 顶端 · G 底端 · d/e 下滑/上滑半屏 · / 正则查找 · Esc 退出查找">{{ currentFile ? "gg / G 首尾 · d / e 滚动 · / 正则" : "Ctrl O 打开 · Ctrl F 查找" }}</span
       ><span v-if="currentFile" class="reading-progress"
       >{{ progress }}%<span class="progress-track" aria-hidden="true"
       ><span :style="{ width: `${progress}%` }"></span></span

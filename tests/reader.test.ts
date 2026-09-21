@@ -10,6 +10,38 @@ import {
   splitBlockAnchor,
 } from "../src/reader/paths.ts";
 
+
+
+test("reading keys: timed gg, repeats, cancellation and exact case", async () => {
+  const { createReadingKeys } = await import("../src/reader/keyboard.ts");
+  const keys = createReadingKeys();
+  assert.equal(keys.accept("g", false, 0), undefined);
+  assert.equal(keys.accept("g", true, 100), undefined);
+  assert.equal(keys.accept("g", false, 200), "top");
+  keys.accept("g", false, 1000);
+  assert.equal(keys.accept("g", false, 1801), undefined);
+  keys.reset();
+  assert.equal(keys.accept("g", false, 1802), undefined);
+  keys.accept("x");
+  assert.equal(keys.accept("g", false, 1803), undefined);
+  for (const [key, action] of [["G", "bottom"], ["d", "down"], ["e", "up"], ["/", "search"]]) {
+    assert.equal(keys.accept(key), action);
+  }
+  assert.equal(keys.accept("D"), undefined);
+});
+
+test("regex: Unicode, slice boundaries, anchors, invalid and empty matches, cap", async () => {
+  const { findRegex } = await import("../src/reader/regex-search.ts");
+  assert.deepEqual(findRegex([{ text: "prefix 中文", group: 1 }, { text: "🙂 42", group: 1 }], "中文. \\d+").matches,
+    [{ block: 0, start: 7, length: 7, endBlock: 1, end: 5 }]);
+  assert.equal(findRegex([{ text: "one", group: 1 }, { text: "two", group: 2 }], "one.*two").matches.length, 0);
+  assert.equal(findRegex([{ text: "Hello\nHELLO" }], "^hello$").matches.length, 2);
+  assert.equal(findRegex([{ text: "🙂abc" }], "(?=.)|$").matches.length, 0);
+  assert.equal(findRegex([{ text: "aaa" }], "a", 2).limited, true);
+  assert.equal(findRegex([{ text: "aa" }], "a", 2).limited, false);
+  assert.throws(() => findRegex([{ text: "text" }], "["), SyntaxError);
+  assert.equal(findRegex([{ text: "text" }], "").matches.length, 0);
+});
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 test("paths: Unicode, escaped fragments, Windows drives, UNC and POSIX", () => {
   assert.equal(
