@@ -41,6 +41,27 @@ async fn read_document(path: String) -> Result<reader::Document, String> {
         .map_err(|e| format!("读取任务失败：{e}"))?
 }
 
+// Enumerate installed system font family names, deduplicated and sorted.
+// Runs on a blocking thread: fontdb scans platform font directories on load.
+#[tauri::command]
+async fn list_system_fonts() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let mut families: Vec<String> = db
+            .faces()
+            .flat_map(|face| face.families.iter())
+            .map(|(name, _)| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+        families.sort();
+        families.dedup();
+        families
+    })
+    .await
+    .map_err(|e| format!("字体枚举任务失败：{e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let initial = from_args(&std::env::args().collect::<Vec<_>>());
@@ -87,6 +108,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_document,
             take_pending_open_file,
+            list_system_fonts,
             startup::reveal_main_window
         ])
         .build(tauri::generate_context!())

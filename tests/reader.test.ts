@@ -7,6 +7,7 @@ import {
   resolveLocalLink,
   isSafeExternal,
   isMarkdownPath,
+  splitBlockAnchor,
 } from "../src/reader/paths.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -37,6 +38,21 @@ test("paths: Unicode, escaped fragments, Windows drives, UNC and POSIX", () => {
   assert.equal(isSafeExternal("https://example.com"), true);
   assert.equal(isMarkdownPath("NOTES.MDX"), true);
   assert.equal(isMarkdownPath("x.exe"), false);
+});
+
+test("paths: Obsidian block anchors require a space and safe id charset", () => {
+  assert.deepEqual(splitBlockAnchor("some text ^quote-1"), {
+    text: "some text",
+    id: "^quote-1",
+  });
+  assert.deepEqual(splitBlockAnchor("trailing  ^b2_x  "), {
+    text: "trailing",
+    id: "^b2_x",
+  });
+  assert.equal(splitBlockAnchor("power 2^10"), null);
+  assert.equal(splitBlockAnchor("no anchor here"), null);
+  assert.equal(splitBlockAnchor("bad ^中文id"), null);
+  assert.equal(splitBlockAnchor("^lonely"), null);
 });
 test("Markdown: headings, table, task list, footnotes and escaping", () => {
   const html = renderMarkdown(

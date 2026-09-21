@@ -27,6 +27,7 @@ tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
+fontdb = "0.24.0"
 
 [profile.release]
 # panic = abort：任何 panic 都会立即退出进程（无 unwind）。所以后端代码里

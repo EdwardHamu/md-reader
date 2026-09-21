@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { renderMarkdown } from "./markdown";
-import { isSafeExternal, resolveLocalLink } from "./paths";
+import { isSafeExternal, resolveLocalLink, splitBlockAnchor } from "./paths";
 
 export interface Heading {
   id: string;
@@ -87,10 +87,43 @@ export function buildDocument(
     table.replaceWith(wrap);
     wrap.append(table);
   }
-  const headings: Heading[] = [];
+  // Copy affordance: wrap code blocks; the button carries no text nodes so
+  // in-document find never matches UI chrome (labels live in CSS content).
+  for (const pre of fragment.querySelectorAll("pre")) {
+    const wrap = document.createElement("div");
+    wrap.className = "code-block";
+    pre.replaceWith(wrap);
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "code-copy";
+    copy.title = "复制代码";
+    copy.setAttribute("aria-label", "复制代码");
+    wrap.append(pre, copy);
+  }
   const used = new Set(
     Array.from(fragment.querySelectorAll("[id]"), (node) => node.id)
   );
+  // Obsidian-style ^block-id markers become element ids for precise jumps.
+  let blockAnchors = 0;
+  for (const block of fragment.querySelectorAll<HTMLElement>(
+    "p,li,td,th,blockquote,h1,h2,h3,h4,h5,h6"
+  )) {
+    if (blockAnchors >= 1000) break;
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let last: Text | null = null;
+    while (walker.nextNode()) {
+      const node = walker.currentNode as Text;
+      if (node.data.trim()) last = node;
+    }
+    if (!last || last.parentElement?.closest("code, pre")) continue;
+    const split = splitBlockAnchor(last.data);
+    if (!split || block.id || used.has(split.id)) continue;
+    last.data = split.text;
+    block.id = split.id;
+    used.add(split.id);
+    ++blockAnchors;
+  }
+  const headings: Heading[] = [];
   for (const heading of fragment.querySelectorAll<HTMLHeadingElement>(
     "h1,h2,h3,h4,h5,h6"
   )) {

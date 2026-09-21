@@ -20,10 +20,14 @@ import {
   scrollToHash,
 } from "./reader/paths";
 import { useFind } from "./reader/find";
+import { useReaderFonts } from "./reader/fonts";
+import { useJumpHistory } from "./reader/history";
+import { useHoverPreview } from "./reader/preview";
 import type { Heading } from "./reader/document";
 
 import ReaderIcon from "./components/ReaderIcon.vue";
 import DocumentOutline from "./components/DocumentOutline.vue";
+import PreviewContent from "./components/PreviewContent.vue";
 
 interface DocumentData {
   path: string;
@@ -100,6 +104,24 @@ const startupReveal = createWindowReveal(() =>
 const fontSize = ref(
   Math.max(12, Math.min(28, Number(saved("reader-font-size")) || 17))
 );
+const fonts = useReaderFonts();
+const fontPanelVisible = ref(false);
+const fontQuery = ref("");
+const filteredFonts = computed(() => {
+  const query = fontQuery.value.trim().toLowerCase();
+  const names = fonts.systemFonts.value;
+  if (!query) return names.slice(0, 400);
+  return names
+    .filter((name) => name.toLowerCase().includes(query))
+    .slice(0, 400);
+});
+function toggleFontPanel() {
+  fontPanelVisible.value = !fontPanelVisible.value;
+  if (fontPanelVisible.value) void fonts.ensureSystemFonts();
+}
+function quoteFamily(name: string) {
+  return `"${name}"`;
+}
 function savePreferences() {
   document.documentElement.dataset.theme = dark.value ? "dark" : "light";
   try {
@@ -152,7 +174,10 @@ const loader = createLatestLoader(
       performance.mark("reader:first-document");
     }
     if (body.value.parentElement) body.value.parentElement.scrollTop = 0;
-    if (request.hash) scrollToHash(body.value, request.hash);
+    if (pendingScrollTop >= 0 && body.value.parentElement) {
+      body.value.parentElement.scrollTop = pendingScrollTop;
+      pendingScrollTop = -1;
+    } else if (request.hash) scrollToHash(body.value, request.hash);
     void nextTick(() => {
       schedulePosition();
       startupReveal.ready();
@@ -171,6 +196,7 @@ const loader = createLatestLoader(
 function loadFile(path: string, hash = "") {
   if (disposed) return;
   ++interaction;
+  preview.dispose();
   clearDocument();
   error.value = "";
   loading.value = true;
@@ -180,6 +206,9 @@ function loadFile(path: string, hash = "") {
 function closeDocument() {
   ++interaction;
   loader.cancel();
+  preview.dispose();
+  history.clear();
+  pendingScrollTop = -1;
   clearDocument();
   loading.value = false;
   error.value = "";
@@ -209,15 +238,51 @@ async function showFind() {
   findInput.value?.select();
   if (query.value) find.search();
 }
+const history = useJumpHistory(
+  () =>
+    currentFile.value && readingArea.value
+      ? { path: currentFile.value, scrollTop: readingArea.value.scrollTop }
+      : null,
+  (entry) => {
+    if (entry.path === currentFile.value) {
+      readingArea.value?.scrollTo({ top: entry.scrollTop });
+      schedulePosition();
+    } else {
+      pendingScrollTop = entry.scrollTop;
+      loadFile(entry.path);
+    }
+  }
+);
+let pendingScrollTop = -1;
+const preview = useHoverPreview(() => body.value);
 function jump(id: string) {
-  if (body.value) scrollToHash(body.value, id);
+  history.push();
+  if (body.value) scrollToHash(body.value, id, { smooth: true });
   activeId.value = id;
   schedulePosition();
 }
+async function copyCode(button: HTMLElement) {
+  const pre = button.parentElement?.querySelector("pre");
+  const text = pre?.textContent || "";
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    button.classList.add("copied");
+    window.setTimeout(() => button.classList.remove("copied"), 1600);
+  } catch {
+    error.value = "复制失败：剪贴板不可用。";
+  }
+}
 function clickDocument(event: MouseEvent) {
+  const copy = (event.target as Element).closest<HTMLElement>(".code-copy");
+  if (copy && body.value?.contains(copy)) {
+    void copyCode(copy);
+    return;
+  }
   const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]");
   if (!link || !body.value?.contains(link)) return;
   event.preventDefault();
+  preview.hide();
   const href = link.getAttribute("href") || "";
   if (href.startsWith("#")) {
     jump(href.slice(1));
@@ -230,10 +295,22 @@ function clickDocument(event: MouseEvent) {
     return;
   }
   const local = resolveLocalLink(currentFile.value, href);
-  if (local && isMarkdownPath(local.path)) loadFile(local.path, local.hash);
-  else
+  if (local && isMarkdownPath(local.path)) {
+    history.push();
+    loadFile(local.path, local.hash);
+  } else
     error.value =
       "只打开 Markdown/文本文件；其他本地附件请使用系统文件管理器。";
+}
+function hoverDocument(event: MouseEvent) {
+  const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]");
+  if (!link || !body.value?.contains(link)) return;
+  const href = link.getAttribute("href") || "";
+  if (href.startsWith("#")) preview.schedule(link, href.slice(1));
+}
+function leaveDocument(event: MouseEvent) {
+  const link = (event.target as Element).closest<HTMLAnchorElement>("a[href]");
+  if (link) preview.scheduleHide();
 }
 function keydown(event: KeyboardEvent) {
   const mod = event.ctrlKey || event.metaKey;
@@ -247,8 +324,17 @@ function keydown(event: KeyboardEvent) {
   } else if (mod && key === "w") {
     event.preventDefault();
     closeDocument();
-  } else if (key === "escape") find.close();
-  else if (mod && ["+", "=", "-", "0"].includes(key)) {
+  } else if (key === "escape") {
+    fontPanelVisible.value = false;
+    preview.hide();
+    find.close();
+  } else if (event.altKey && key === "arrowleft") {
+    event.preventDefault();
+    history.back();
+  } else if (event.altKey && key === "arrowright") {
+    event.preventDefault();
+    history.forward();
+  } else if (mod && ["+", "=", "-", "0"].includes(key)) {
     event.preventDefault();
     if (key === "0") {
       fontSize.value = 17;
@@ -261,10 +347,20 @@ async function register(subscription: Promise<UnlistenFn>) {
   if (disposed) unlisten();
   else cleanup.push(unlisten);
 }
+function mouseNav(event: MouseEvent) {
+  if (event.button === 3) {
+    event.preventDefault();
+    history.back();
+  } else if (event.button === 4) {
+    event.preventDefault();
+    history.forward();
+  }
+}
 onMounted(async () => {
   startupReveal.start();
   window.addEventListener("keydown", keydown);
   window.addEventListener("resize", schedulePosition);
+  window.addEventListener("mouseup", mouseNav);
   try {
     const revision = interaction;
     // Register independent listeners in parallel; pending-open still waits for both.
@@ -301,9 +397,11 @@ onBeforeUnmount(() => {
   startupReveal.dispose();
   loader.dispose();
   find.clear();
+  preview.dispose();
   for (const unlisten of cleanup) unlisten();
   window.removeEventListener("keydown", keydown);
   window.removeEventListener("resize", schedulePosition);
+  window.removeEventListener("mouseup", mouseNav);
   clearDocument();
 });
 </script>
@@ -346,6 +444,26 @@ onBeforeUnmount(() => {
       </div>
       <span class="file-name" :title="currentFile">{{ fileName }}</span>
       <div class="reading-tools">
+        <button
+          class="icon-button"
+          type="button"
+          title="返回跳转前位置 (Alt+←)"
+          aria-label="返回跳转前位置"
+          :disabled="!history.canBack.value"
+          @click="history.back()"
+        >
+          <ReaderIcon name="back" />
+        </button>
+        <button
+          class="icon-button"
+          type="button"
+          title="前进 (Alt+→)"
+          aria-label="前进"
+          :disabled="!history.canForward.value"
+          @click="history.forward()"
+        >
+          <ReaderIcon name="forward" />
+        </button>
         <div class="font-control">
           <button
             type="button"
@@ -367,6 +485,16 @@ onBeforeUnmount(() => {
             A+
           </button>
         </div>
+        <button
+          class="icon-button"
+          type="button"
+          title="自定义阅读字体"
+          aria-label="自定义阅读字体"
+          :aria-pressed="fontPanelVisible"
+          @click="toggleFontPanel"
+        >
+          <ReaderIcon name="type" />
+        </button>
         <button
           class="icon-button"
           type="button"
@@ -421,6 +549,89 @@ onBeforeUnmount(() => {
       </button>
       <small v-if="findLimited">仅保留前 1000 个匹配，请缩小关键词范围。</small>
     </form>
+    <section
+      v-if="fontPanelVisible"
+      class="font-panel"
+      aria-label="自定义阅读字体"
+    >
+      <div class="font-panel-head">
+        <strong>阅读字体</strong>
+        <small
+        >按顺序作为候选字体（最多 {{ fonts.maxCandidates }} 个）；缺字时回退到下一候选</small
+        >
+        <button
+          type="button"
+          class="icon-button"
+          aria-label="关闭字体设置"
+          @click="fontPanelVisible = false"
+        >
+          <ReaderIcon name="close" />
+        </button>
+      </div>
+      <div v-if="fonts.families.value.length" class="font-selected">
+        <span
+          v-for="(name, index) in fonts.families.value"
+          :key="name"
+          class="font-chip"
+          :style="{ fontFamily: quoteFamily(name) }"
+        >
+          <em>{{ index + 1 }}</em>{{ name }}
+          <button
+            type="button"
+            :disabled="index === 0"
+            aria-label="提高优先级"
+            @click="fonts.move(name, -1)"
+          >
+            ←
+          </button>
+          <button
+            type="button"
+            :disabled="index === fonts.families.value.length - 1"
+            aria-label="降低优先级"
+            @click="fonts.move(name, 1)"
+          >
+            →
+          </button>
+          <button
+            type="button"
+            aria-label="移除该字体"
+            @click="fonts.toggle(name)"
+          >
+            ×
+          </button>
+        </span>
+        <button type="button" class="font-reset" @click="fonts.reset()">
+          恢复默认
+        </button>
+      </div>
+      <p v-else class="font-empty">未选择自定义字体，使用默认字体栈。</p>
+      <input
+        v-model="fontQuery"
+        type="search"
+        placeholder="搜索系统字体…"
+        aria-label="搜索系统字体"
+        autocomplete="off"
+      />
+      <p v-if="fonts.fontsError.value" class="font-empty" role="alert">
+        {{ fonts.fontsError.value }}
+      </p>
+      <p v-else-if="fonts.fontsLoading.value" class="font-empty" role="status">
+        正在读取系统字体…
+      </p>
+      <ul v-else class="font-list">
+        <li v-for="name in filteredFonts" :key="name">
+          <button
+            type="button"
+            :class="{ active: fonts.families.value.includes(name) }"
+            :style="{ fontFamily: quoteFamily(name) }"
+            @click="fonts.toggle(name)"
+          >
+            <span class="font-name">{{ name }}</span>
+            <span class="font-sample" aria-hidden="true">永字八法 AaBb 123</span>
+          </button>
+        </li>
+      </ul>
+    </section>
     <div v-if="error" class="error" role="alert">
       {{ error }} <button type="button" @click="error = ''">知道了</button>
     </div>
@@ -469,10 +680,28 @@ onBeforeUnmount(() => {
         <article
           ref="body"
           class="markdown-body"
-          :style="{ fontSize: `${fontSize}px` }"
+          :style="{
+            fontSize: `${fontSize}px`,
+            fontFamily: fonts.fontFamily.value || undefined,
+          }"
           @click="clickDocument"
+          @mouseover="hoverDocument"
+          @mouseout="leaveDocument"
         ></article>
       </main>
+    </div>
+    <div
+      v-if="preview.visible.value"
+      class="hover-preview"
+      :style="{
+        left: `${preview.position.value.x}px`,
+        top: `${preview.position.value.y}px`,
+        fontSize: `${Math.max(12, fontSize - 3)}px`,
+      }"
+      @mouseenter="preview.holdOpen()"
+      @mouseleave="preview.scheduleHide()"
+    >
+      <PreviewContent :node="preview.content.value" />
     </div>
     <footer class="status-bar">
       <span class="status-dot" aria-hidden="true"></span

@@ -36,7 +36,7 @@ export function resolveLocalLink(
   }
 }
 
-export function scrollToHash(root: HTMLElement, hash: string): void {
+export function findAnchor(root: HTMLElement, hash: string): HTMLElement | null {
   let decoded = hash;
   try {
     decoded = decodeURIComponent(hash);
@@ -46,9 +46,46 @@ export function scrollToHash(root: HTMLElement, hash: string): void {
   // Exact first: heading IDs may themselves contain percent escapes.
   for (const id of [hash, decoded]) {
     const target = root.querySelector<HTMLElement>(`[id="${CSS.escape(id)}"]`);
-    if (target) {
-      target.scrollIntoView({ block: "start" });
-      return;
-    }
+    if (target) return target;
   }
+  return null;
+}
+
+export function scrollToHash(
+  root: HTMLElement,
+  hash: string,
+  options: { smooth?: boolean } = {}
+): boolean {
+  const target = findAnchor(root, hash);
+  if (!target) return false;
+  const reduced = window.matchMedia(
+    "(prefers-reduced-motion: reduce)"
+  ).matches;
+  target.scrollIntoView({
+    block: "start",
+    behavior: options.smooth && !reduced ? "smooth" : "auto",
+  });
+  // Flash the landing block so the eye finds the new viewport position.
+  if (!reduced) {
+    target.classList.remove("anchor-flash");
+    void target.offsetWidth; // Restart the animation on repeated jumps.
+    target.classList.add("anchor-flash");
+    target.addEventListener(
+      "animationend",
+      () => target.classList.remove("anchor-flash"),
+      { once: true }
+    );
+  }
+  return true;
+}
+
+/** Obsidian-style trailing block anchor: "text ^block-id" (space required). */
+export function splitBlockAnchor(
+  text: string
+): { text: string; id: string } | null {
+  const match = /^([\s\S]*?)[ \t]\^([A-Za-z0-9][A-Za-z0-9_-]{0,63})\s*$/.exec(
+    text
+  );
+  if (!match) return null;
+  return { text: match[1].replace(/[ \t]+$/, ""), id: `^${match[2]}` };
 }
