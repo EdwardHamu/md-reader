@@ -1,13 +1,20 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 #[derive(Default)]
-pub struct StartupGate(AtomicBool);
+pub struct StartupGate(AtomicBool, AtomicU64);
 
 impl StartupGate {
+    pub fn reset(&self) {
+        self.1.fetch_add(1, Ordering::AcqRel);
+        self.0.store(false, Ordering::Release);
+    }
+
+    fn generation(&self) -> u64 { self.1.load(Ordering::Acquire) }
+
     pub fn is_revealed(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
@@ -71,26 +78,27 @@ pub fn focus_existing(app: &tauri::AppHandle) {
 }
 
 pub fn arm_watchdog(app: tauri::AppHandle) {
-    // Independent of JS, rAF, IPC and WebView timers. Not a permanent background service.
+    // An old watchdog must never reveal a newly recreated WebView.
+    let generation = app.state::<StartupGate>().generation();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(6));
-        let Some(window) = app.get_webview_window("main") else {
-            return;
-        };
-        let result = app.state::<StartupGate>().reveal(|| show_main(&window));
-        let message = match result {
-            Ok(false) => return,
-            Ok(true) => {
-                let _ = window.set_focus();
-                "界面未能及时就绪，窗口已恢复显示。若仍无响应，请关闭应用后重试；若页面提供“重新加载”，也可点击重试。"
-            }
-            Err(_) => "系统未能显示 MD Reader 主窗口，请关闭应用后重试。",
-        };
-        app.dialog()
-            .message(message)
-            .title("MD Reader · 启动恢复")
-            .kind(tauri_plugin_dialog::MessageDialogKind::Warning)
-            .show(|_| {});
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let gate = handle.state::<StartupGate>();
+            if gate.generation() != generation { return; }
+            let Some(window) = handle.get_webview_window("main") else { return; };
+            let result = gate.reveal(|| show_main(&window));
+            let message = match result {
+                Ok(false) => return,
+                Ok(true) => {
+                    let _ = window.set_focus();
+                    "界面未能及时就绪，窗口已恢复显示。可关闭窗口后从托盘重新打开。"
+                }
+                Err(_) => "系统未能显示 MD Reader 主窗口，请从托盘重试。",
+            };
+            handle.dialog().message(message).title("MD Reader · 启动恢复")
+                .kind(tauri_plugin_dialog::MessageDialogKind::Warning).show(|_| {});
+        });
     });
 }
 
@@ -107,6 +115,16 @@ mod tests {
             Ok::<bool, ()>(false)
         );
         assert!(gate.is_revealed());
+    }
+    #[test]
+    fn reset_starts_new_generation() {
+        let gate = StartupGate::default();
+        let previous = gate.generation();
+        assert_eq!(gate.reveal(|| Ok::<(), ()>(())), Ok(true));
+        gate.reset();
+        assert_ne!(gate.generation(), previous);
+        assert!(!gate.is_revealed());
+        assert_eq!(gate.reveal(|| Ok::<(), ()>(())), Ok(true));
     }
     #[test]
     fn failed_show_can_be_retried_by_watchdog() {

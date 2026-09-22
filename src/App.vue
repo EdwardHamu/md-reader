@@ -436,7 +436,8 @@ onMounted(async () => {
         )
       ),
     ]);
-    if (disposed || interaction !== revision) return;
+    // Always handshake after listeners attach, even if the user already interacted.
+    if (disposed) return;
     const path = await invoke<string | null>("take_pending_open_file");
     if (!disposed && interaction === revision && path) loadFile(path);
   } catch (failure) {

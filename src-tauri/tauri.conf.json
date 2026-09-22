@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "MD Reader",
         "width": 1100,
         "height": 760,

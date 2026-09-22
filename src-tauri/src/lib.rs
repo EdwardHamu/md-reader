@@ -1,11 +1,17 @@
 mod reader;
 mod startup;
+mod resident;
 
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State};
 
 // A single pending path, not an unbounded queue. Managed before setup for macOS Opened.
-struct PendingOpen(Mutex<Option<String>>);
+#[derive(Default)]
+struct OpenState {
+    path: Option<String>,
+    ready: bool,
+}
+struct PendingOpen(Mutex<OpenState>);
 
 fn from_args(args: &[String]) -> Option<String> {
     args.iter().skip(1).find_map(|arg| {
@@ -22,16 +28,14 @@ fn from_args(args: &[String]) -> Option<String> {
 }
 
 fn deliver_file(app: &tauri::AppHandle, path: String) {
-    if let Ok(mut pending) = app.state::<PendingOpen>().0.lock() {
-        *pending = Some(path.clone());
-    }
-    startup::focus_existing(app);
-    let _ = app.emit("md-reader://open-file", path);
+    resident::request_window(app, Some(path));
 }
 
 #[tauri::command]
 fn take_pending_open_file(state: State<'_, PendingOpen>) -> Option<String> {
-    state.0.lock().ok()?.take()
+    let mut state = state.0.lock().ok()?;
+    state.ready = true;
+    state.path.take()
 }
 
 #[tauri::command]
@@ -66,13 +70,13 @@ async fn list_system_fonts() -> Result<Vec<String>, String> {
 pub fn run() {
     let initial = from_args(&std::env::args().collect::<Vec<_>>());
     let app = tauri::Builder::default()
-        .manage(PendingOpen(Mutex::new(initial)))
+        .manage(PendingOpen(Mutex::new(OpenState { path: initial, ready: false })))
         .manage(startup::StartupGate::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(path) = from_args(&args) {
                 deliver_file(app, path);
             } else {
-                startup::focus_existing(app);
+                resident::request_window(app, None);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -92,17 +96,10 @@ pub fn run() {
                 .build(),
         )
         .setup(|app| {
-            // Match the OS until the tiny HTML bootstrap applies the saved reader preference.
-            // The main window stays hidden until frontend readiness or the native watchdog.
-            if let Some(window) = app.get_webview_window("main") {
-                let color = if matches!(window.theme(), Ok(tauri::Theme::Dark)) {
-                    tauri::window::Color(20, 18, 24, 255)
-                } else {
-                    tauri::window::Color(244, 242, 247, 255)
-                };
-                let _ = window.set_background_color(Some(color));
-            }
-            startup::arm_watchdog(app.handle().clone());
+            resident::install_tray(app.handle())?;
+            let has_file = app.state::<PendingOpen>().0.lock()
+                .map(|state| state.path.is_some()).unwrap_or(false);
+            if has_file { resident::ensure_window(app.handle())?; }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,6 +111,21 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("无法启动 MD Reader");
     app.run(|_app, _event| {
+        match &_event {
+            tauri::RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
+            tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. }
+                if label == "main" => {
+                _app.state::<startup::StartupGate>().reset();
+                if let Ok(mut state) = _app.state::<PendingOpen>().0.lock() {
+                    *state = OpenState::default();
+                }
+            }
+            _ => {}
+        }
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = &_event {
+            resident::request_window(_app, None);
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Opened { urls } = _event {
             if let Some(path) = urls
