@@ -112,6 +112,26 @@ const open = (page: Page, path: string) =>
 
 
 
+test("smooth scrolling animates wheel and respects reduced motion", async ({ page }) => {
+  await setup(page, "# Smooth\n\n" + "Scrollable paragraph.\n\n".repeat(150));
+  const area = page.locator(".reading-area");
+  const immediate = await area.evaluate((el) => {
+    el.dispatchEvent(new WheelEvent("wheel", { deltaY: 300, bubbles: true, cancelable: true }));
+    return el.scrollTop;
+  });
+  expect(immediate).toBe(0);
+  await expect.poll(() => area.evaluate((el) => el.scrollTop)).toBeGreaterThan(250);
+  await expect.poll(() => area.evaluate((el) => el.scrollTop)).toBeGreaterThan(295);
+  await page.keyboard.type("gg");
+  await expect.poll(() => area.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.keyboard.press("d");
+  const metrics = await area.evaluate((el) => ({ top: el.scrollTop, half: el.clientHeight / 2 }));
+  expect(Math.abs(metrics.top - metrics.half)).toBeLessThan(2);
+  await page.keyboard.press("e");
+  await expect.poll(() => area.evaluate((el) => el.scrollTop)).toBe(0);
+});
+
 test("keyboard workflow navigates virtual document and live regex", async ({ page }) => {
   await setup(page, "# Keyboard\n\n" + Array.from({ length: 150 }, (_, i) => `Paragraph ${i} needle-${i}\n\n`).join(""));
   const area = page.locator(".reading-area");

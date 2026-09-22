@@ -361,7 +361,7 @@ function keydown(event: KeyboardEvent) {
         history.push();
         virtualReader?.restore({ block: command === "top" ? 0 : virtualReader.model.blocks.length - 1, offset: 0 });
         area.scrollTop = command === "top" ? 0 : area.scrollHeight;
-      } else area.scrollBy({ top: area.clientHeight * (command === "down" ? 0.5 : -0.5), behavior: "instant" });
+      } else virtualReader?.scrollBy(area.clientHeight * (command === "down" ? 0.5 : -0.5));
       schedulePosition(); return;
     }
   }

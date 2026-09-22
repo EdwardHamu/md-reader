@@ -1,6 +1,7 @@
 import { HeightIndex, type TextMatch } from "./virtual-index";
 import type { VirtualDocument } from "./virtual-document";
 import { findAnchor } from "./paths";
+import { createSmoothScroll } from "./smooth-scroll";
 
 export interface ReadingAnchor { block: number; offset: number }
 
@@ -11,6 +12,7 @@ export function createVirtualReader(
   model: VirtualDocument,
   changed: () => void
 ) {
+  const smooth = createSmoothScroll(area);
   const virtual = model.blocks.length > 80;
   const top = document.createElement("div");
   const content = document.createElement("div");
@@ -123,6 +125,7 @@ export function createVirtualReader(
     if (!disposed && !frame) frame = requestAnimationFrame(() => { frame = 0; render(); });
   }
   function invalidate() {
+    smooth.cancel();
     if (disposed) return;
     const anchor = capture();
     signature = layoutSignature();
@@ -144,6 +147,7 @@ export function createVirtualReader(
     return mounted.get(block) || null;
   }
   function restore(anchor: ReadingAnchor) {
+    smooth.cancel();
     const block = Math.min(Math.max(0, anchor.block), model.blocks.length - 1);
     if (block < 0) return;
     ensure(block);
@@ -155,6 +159,7 @@ export function createVirtualReader(
     try { return model.anchors.get(decodeURIComponent(hash)); } catch { return undefined; }
   }
   function jump(hash: string) {
+    smooth.cancel();
     const block = anchorIndex(hash);
     if (block === undefined) return false;
     const host = ensure(block);
@@ -192,6 +197,7 @@ export function createVirtualReader(
     return result;
   }
   function focusMatch(match: TextMatch) {
+    smooth.cancel();
     ensure(match.block);
     const target = range({ block: match.block, start: match.start,
       length: Math.min(match.length, model.blocks[match.block].text.length - match.start) });
@@ -259,9 +265,10 @@ export function createVirtualReader(
   render();
   return {
     model, virtual, range, focusMatch, jump, restore, capture, activeHeading, preview, code,
-    refresh: render, invalidate,
+    refresh: render, invalidate, scrollBy: smooth.by,
     dispose() {
       disposed = true; cancelAnimationFrame(frame);
+      smooth.dispose();
       observer.disconnect(); layoutObserver.disconnect();
       area.removeEventListener("scroll", schedule);
       document.fonts.removeEventListener("loadingdone", invalidate);
