@@ -24,6 +24,7 @@ import { createReadingKeys, isEditingTarget } from "./reader/keyboard";
 import { useReaderFonts } from "./reader/fonts";
 import { useJumpHistory } from "./reader/history";
 import { useHoverPreview } from "./reader/preview";
+import { createReadingProgressStore } from "./reader/progress";
 import type { Heading } from "./reader/document";
 import { createVirtualReader, type VirtualReader, type ReadingAnchor } from "./reader/virtual-reader";
 
@@ -55,6 +56,31 @@ const fileName = computed(
 let virtualReader: VirtualReader | undefined;
 const virtualized = ref(false);
 let scrollFrame = 0;
+const readingProgress = createReadingProgressStore((() => {
+  try { return window.localStorage; } catch { return null; }
+})());
+let positionReady = false;
+let progressTimer = 0;
+function rememberPosition() {
+  if (!positionReady || !currentFile.value || !virtualReader) return false;
+  return readingProgress.remember(currentFile.value, virtualReader.capture());
+}
+function scheduleProgressFlush() {
+  window.clearTimeout(progressTimer);
+  progressTimer = window.setTimeout(() => {
+    progressTimer = 0;
+    readingProgress.flush();
+  }, 500);
+}
+function flushPosition() {
+  window.clearTimeout(progressTimer);
+  progressTimer = 0;
+  rememberPosition();
+  readingProgress.flush();
+}
+function flushWhenHidden() {
+  if (document.visibilityState === "hidden") flushPosition();
+}
 function updatePosition() {
   scrollFrame = 0;
   const area = readingArea.value;
@@ -62,6 +88,7 @@ function updatePosition() {
   const range = area.scrollHeight - area.clientHeight;
   progress.value = range > 0 ? Math.round((area.scrollTop / range) * 100) : 100;
   activeId.value = virtualReader?.activeHeading() || "";
+  if (rememberPosition()) scheduleProgressFlush();
 }
 function schedulePosition() {
   if (!scrollFrame) scrollFrame = requestAnimationFrame(updatePosition);
@@ -137,6 +164,8 @@ function changeFont(delta: number) {
   savePreferences();
 }
 function clearDocument() {
+  flushPosition();
+  positionReady = false;
   readingKeys.reset();
   find.reset(); // Ranges must be released before detaching their DOM.
   headings.value = [];
@@ -169,6 +198,7 @@ const loader = createLatestLoader(
   },
   ({ path, model }, request) => {
     if (!body.value || !readingArea.value) return;
+    positionReady = false;
     currentFile.value = path;
     headings.value = model.headings;
     readingArea.value.scrollTop = 0;
@@ -183,6 +213,7 @@ const loader = createLatestLoader(
     const view = virtualReader;
     const restoreTop = pendingScrollTop;
     const restoreAnchor = pendingAnchor;
+    const remembered = readingProgress.get(path);
     pendingScrollTop = -1;
     pendingAnchor = undefined;
     void nextTick(() => {
@@ -193,6 +224,8 @@ const loader = createLatestLoader(
         readingArea.value.scrollTop = restoreTop;
         view.refresh();
       } else if (request.hash) view.jump(request.hash);
+      else if (remembered) view.restore(remembered);
+      positionReady = true;
       schedulePosition();
       startupReveal.ready();
     });
@@ -415,6 +448,8 @@ onMounted(async () => {
   window.addEventListener("pointerdown", resetReadingKeys);
   window.addEventListener("resize", schedulePosition);
   window.addEventListener("mouseup", mouseNav);
+  window.addEventListener("pagehide", flushPosition);
+  document.addEventListener("visibilitychange", flushWhenHidden);
   try {
     const revision = interaction;
     // Register independent listeners in parallel; pending-open still waits for both.
@@ -460,6 +495,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("pointerdown", resetReadingKeys);
   window.removeEventListener("resize", schedulePosition);
   window.removeEventListener("mouseup", mouseNav);
+  window.removeEventListener("pagehide", flushPosition);
+  document.removeEventListener("visibilitychange", flushWhenHidden);
   clearDocument();
 });
 </script>

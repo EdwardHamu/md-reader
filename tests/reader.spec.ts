@@ -110,6 +110,36 @@ const open = (page: Page, path: string) =>
     path
   );
 
+test("reading progress restores per-file position after switching, closing and restarting", async ({ page }) => {
+  const source = "# First\n\n[Jump to Chapter](first.md#chapter)\n\n" +
+    Array.from({ length: 60 }, (_, i) => `Paragraph ${i} ${"reading text ".repeat(10)}`).join("\n\n") +
+    "\n\n## Chapter\n\nThe end.\n";
+  await setup(page, source);
+  const area = page.locator(".reading-area");
+  const position = () => area.evaluate((node) => node.scrollTop);
+  await area.evaluate((node) => { node.scrollTop = 520; });
+  await expect.poll(position).toBeGreaterThan(350);
+  await open(page, "C:/docs/second.md");
+  await expect(page.locator(".markdown-body h1")).toHaveText("second");
+  await expect.poll(position).toBe(0);
+  await open(page, "C:/docs/first.md");
+  await expect(page.locator(".markdown-body h1")).toHaveText("First");
+  await expect.poll(position).toBeGreaterThan(350);
+  await page.getByTitle("关闭文档 (Ctrl+W)").click();
+  await expect(page.locator("article")).toBeEmpty();
+  await open(page, "C:/docs/first.md");
+  await expect.poll(position).toBeGreaterThan(350);
+  await page.reload();
+  await expect(page.locator(".markdown-body h1")).toHaveText("First");
+  await expect.poll(position).toBeGreaterThan(350);
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("reader-reading-progress-v1") || "[]"));
+  expect(stored.find((entry: { path: string }) => entry.path === "C:/docs/first.md")?.anchor.block).toBeGreaterThan(0);
+  // A deliberate link target takes precedence over a previously saved reading position.
+  await page.getByRole("link", { name: "Jump to Chapter" }).click();
+  await expect(page.locator(".markdown-body h2")).toHaveText("Chapter");
+  await expect(page.locator(".markdown-body h2")).toBeInViewport();
+});
+
 
 
 test("smooth scrolling animates wheel and respects reduced motion", async ({ page }) => {
@@ -617,7 +647,7 @@ test("virtual: 18000 lines stay DOM-bounded through scrolling, far search, outli
     await page.getByTitle("关闭文档 (Ctrl+W)").click();
     await expect(page.locator("article")).toBeEmpty();
     await open(page, "C:/docs/first.md");
-    await expect(page.locator(".markdown-body h1")).toBeInViewport();
+    await expect.poll(() => page.locator(".reading-area").evaluate((el) => el.scrollTop)).toBeGreaterThan(1000);
   }
   await cdp.send("HeapProfiler.collectGarbage");
   const after = await cdp.send("Memory.getDOMCounters");

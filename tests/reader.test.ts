@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderMarkdown, renderMarkdownChunks } from "../src/reader/markdown.ts";
 import { createLatestLoader } from "../src/reader/latest.ts";
+import { createReadingProgressStore } from "../src/reader/progress.ts";
 import {
   fileUrl,
   resolveLocalLink,
@@ -11,6 +12,59 @@ import {
 } from "../src/reader/paths.ts";
 
 
+
+test("reading progress: keep the latest 100 file anchors across restarts", () => {
+  const data = new Map<string, string>();
+  let writes = 0;
+  const storage = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem(key: string, value: string) { writes++; data.set(key, value); },
+  };
+  const first = createReadingProgressStore(storage);
+  for (let i = 0; i < 100; i++) {
+    assert.equal(first.remember(`C:/docs/${i}.md`, { block: i, offset: i + 0.5 }), true);
+  }
+  assert.equal(writes, 0); // A scroll never needs a synchronous storage write.
+  first.flush();
+  assert.equal(writes, 1);
+  const resumed = createReadingProgressStore(storage);
+  assert.deepEqual(resumed.get("C:/docs/0.md"), { block: 0, offset: 0.5 });
+  assert.equal(resumed.remember("C:/docs/0.md", { block: 0, offset: 0.5 }), true);
+  assert.equal(resumed.remember("C:/docs/100.md", { block: 100, offset: 1.25 }), true);
+  resumed.flush();
+  const entries = JSON.parse(data.get("reader-reading-progress-v1")!) as { path: string }[];
+  assert.equal(entries.length, 100);
+  assert.equal(entries[0].path, "C:/docs/2.md");
+  assert.equal(entries.at(-1)?.path, "C:/docs/100.md");
+  assert.equal(resumed.get("C:/docs/1.md"), undefined);
+  assert.deepEqual(createReadingProgressStore(storage).get("C:/docs/0.md"), { block: 0, offset: 0.5 });
+  assert.equal(resumed.remember("C:/docs/100.md", { block: 100, offset: 1.25 }), false);
+  resumed.flush();
+  assert.equal(writes, 2);
+});
+
+test("reading progress: ignore invalid data and survive unavailable storage", () => {
+  const malformed = createReadingProgressStore({
+    getItem: () => JSON.stringify([
+      { path: "invalid", anchor: { block: -1, offset: 0 } },
+      { path: "nan", anchor: { block: 0, offset: "NaN" } },
+      { path: "valid", anchor: { block: 1, offset: 3.5 } },
+      { path: "valid", anchor: { block: 2, offset: 0 } },
+    ]),
+    setItem: () => {},
+  });
+  assert.equal(malformed.get("invalid"), undefined);
+  assert.equal(malformed.get("nan"), undefined);
+  assert.deepEqual(malformed.get("valid"), { block: 2, offset: 0 });
+  const blocked = createReadingProgressStore({
+    getItem: () => { throw new Error("denied"); },
+    setItem: () => { throw new Error("quota"); },
+  });
+  assert.equal(blocked.remember("/home/docs/a.md", { block: 9, offset: 4 }), true);
+  assert.doesNotThrow(() => blocked.flush());
+  assert.deepEqual(blocked.get("/home/docs/a.md"), { block: 9, offset: 4 });
+  assert.equal(createReadingProgressStore({ getItem: () => "{", setItem: () => {} }).get("x"), undefined);
+});
 
 test("reading keys: timed gg, repeats, cancellation and exact case", async () => {
   const { createReadingKeys } = await import("../src/reader/keyboard.ts");

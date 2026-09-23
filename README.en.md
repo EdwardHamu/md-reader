@@ -8,11 +8,13 @@ A single-document Markdown reader built with Tauri 2 and Vue 3, reduced to prior
 
 Open/drop/OS-associated Markdown files, a heading outline, in-document find, relative document links, local/remote images, GFM tables, read-only tasks, footnotes, basic highlighting, light/dark themes and font size. Single-instance handling and window geometry restoration remain.
 
+Reading positions for the 100 most recently opened files are remembered across restarts. Only file paths and block offsets are stored; files are not reopened automatically.
+
 Basic highlighting covers JavaScript, TypeScript, JSON, Bash, Python, CSS, HTML/XML and Rust. Other languages and Mermaid fences remain readable code. Math is not rendered. YAML front matter is escaped text; MDX does not execute JSX.
 
 ## Removed
 
-Editing/saving, tabs, recent files/session restoration, file tree, recursive scanning/watchers, cross-file search, all exports/printing/PDF preview, KaTeX, Mermaid, emoji shortcodes, update checks, font enumeration and advanced settings. Existing user settings/files are not deleted.
+Editing/saving, tabs, a recent-files list and automatic session restoration, file tree, recursive scanning/watchers, cross-file search, all exports/printing/PDF preview, KaTeX, Mermaid, emoji shortcodes, update checks, font enumeration and advanced settings. Existing user settings/files are not deleted.
 
 ## Resource boundaries
 
