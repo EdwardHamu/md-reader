@@ -53,6 +53,32 @@ const fileName = computed(
   () =>
     currentFile.value.replace(/\\/g, "/").split("/").pop() || "开启一段专注时光"
 );
+const pathCopied = ref(false);
+let pathCopiedTimer: ReturnType<typeof setTimeout> | undefined;
+async function copyCurrentPath() {
+  const path = currentFile.value;
+  if (!path) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(path);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = path;
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      const ok = document.execCommand("copy");
+      input.remove();
+      if (!ok) throw new Error("execCommand failed");
+    }
+    pathCopied.value = true;
+    clearTimeout(pathCopiedTimer);
+    pathCopiedTimer = setTimeout(() => (pathCopied.value = false), 1500);
+  } catch (failure) {
+    error.value = `复制路径失败：${String(failure)}`;
+  }
+}
 let virtualReader: VirtualReader | undefined;
 const virtualized = ref(false);
 let scrollFrame = 0;
@@ -399,7 +425,10 @@ function keydown(event: KeyboardEvent) {
     }
   }
   const key = event.key.toLowerCase();
-  if (mod && key === "o") {
+  if (mod && event.shiftKey && key === "c" && currentFile.value && !isEditingTarget(event.target)) {
+    event.preventDefault();
+    void copyCurrentPath();
+  } else if (mod && key === "o") {
     event.preventDefault();
     void chooseFile();
   } else if (mod && key === "f") {
@@ -538,6 +567,16 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <span class="file-name" :title="currentFile">{{ fileName }}</span>
+      <button
+        v-if="currentFile"
+        class="icon-button"
+        type="button"
+        :title="pathCopied ? '已复制' : '复制文件路径 (Ctrl+Shift+C)'"
+        :aria-label="pathCopied ? '已复制文件路径' : '复制文件路径'"
+        @click="copyCurrentPath"
+      >
+        <ReaderIcon :name="pathCopied ? 'check' : 'copy'" />
+      </button>
       <div class="reading-tools">
         <button
           class="icon-button"

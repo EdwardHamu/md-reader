@@ -14,6 +14,8 @@ const paths: Record<string, string> = {
   chevron: "m9 5 7 7-7 7",
   up: "m6 14 6-6 6 6",
   down: "m6 10 6 6 6-6",
+  copy: "M9 9h11v11H9z M5 15H4V4h11v1",
+  check: "M5 12l5 5L20 7",
 };
 </script>
 
