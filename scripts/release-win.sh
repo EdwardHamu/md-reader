@@ -181,6 +181,51 @@ dispatch() {
   discover
 }
 
+app_version_at() {
+  # Read package.json at the pinned commit so the tag matches what CI validates.
+  retry gh api "repos/$repo/contents/package.json?ref=$1" \
+    -H 'Accept: application/vnd.github.raw+json' --jq '.version'
+}
+
+existing_tags() {
+  # Existing git tags and releases (including drafts that may not have a tag yet).
+  retry gh api "repos/$repo/git/matching-refs/tags/$1" --jq '.[].ref' || return 1
+  retry gh api "repos/$repo/releases?per_page=100" --jq '.[].tag_name' || return 1
+}
+
+generate_tag() {
+  local version prefix names name n max=0
+  version=$(app_version_at "$source_sha") || { failure_message='无法读取远端 package.json 版本号，请用 --tag 手动指定'; return 1; }
+  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { failure_message="package.json 版本号无效：$version"; return 1; }
+  prefix="v$version-win."
+  names=$(existing_tags "$prefix") || { failure_message='无法查询已有标签/Release，请用 --tag 手动指定'; return 1; }
+  while IFS= read -r name; do
+    name=${name#refs/tags/}
+    [[ $name == "$prefix"* ]] || continue
+    n=${name#"$prefix"}
+    [[ $n =~ ^[0-9]{1,6}$ ]] || continue
+    if (( 10#$n > max )); then max=$((10#$n)); fi
+  done <<<"$names"
+  tag="$prefix$((max + 1))"
+  log "自动生成 Release 标签：$tag（基于 package.json 版本 $version）"
+}
+
+download_exe() {
+  local dir files name
+  dir=${download_dir:-release-downloads/$tag}
+  mkdir -p -- "$dir" || { download_message="无法创建下载目录 $dir"; return 1; }
+  log "下载 Release $tag 的 EXE 到：$dir"
+  # The release may become visible slightly after the run completes; retry covers that.
+  if ! retry gh release download "$tag" --repo "$repo" --pattern '*.exe' --dir "$dir" --clobber >/dev/null; then
+    download_message="EXE 下载失败，可稍后手动执行：gh release download $tag --repo $repo --pattern '*.exe'"
+    return 1
+  fi
+  files=$(find "$dir" -maxdepth 1 -type f -name '*.exe' -print)
+  [[ -n $files ]] || { download_message="Release $tag 中没有找到 .exe 文件"; return 1; }
+  while IFS= read -r name; do log "已下载：$name"; done <<<"$files"
+  download_message="EXE 已下载到 $dir"
+}
+
 monitor() {
   local deadline=$((SECONDS + MONITOR_TIMEOUT_SECONDS)) response status conclusion path event previous=''
   run_url="https://github.com/$repo/actions/runs/$run_id"
@@ -205,7 +250,17 @@ monitor() {
         if [[ $conclusion == success ]]; then
           log 'Windows EXE 打包和 Release 上传完成。'
           [[ -z $tag ]] || log "Release：https://github.com/$repo/releases/tag/$tag"
-          notify 'Windows EXE 打包成功' "Release 上传完成。$run_url${tag:+  Release: https://github.com/$repo/releases/tag/$tag}"
+          download_message=''
+          if [[ -z $tag ]]; then
+            (( no_download )) || log '未知 Release 标签，跳过自动下载；恢复监控时加 --tag 可自动下载。'
+          elif (( ! no_download )); then
+            if ! download_exe; then
+              log "$download_message"
+              notify 'Windows EXE 打包成功，但下载失败' "$download_message。$run_url"
+              return 3
+            fi
+          fi
+          notify 'Windows EXE 打包成功' "Release 上传完成。${download_message:+$download_message。}$run_url${tag:+  Release: https://github.com/$repo/releases/tag/$tag}"
           return 0
         fi
         log "构建未成功：$conclusion。日志：$run_url"
@@ -225,11 +280,15 @@ monitor() {
 usage() {
   cat <<'HELP'
 用法：
-  bash scripts/release-win.sh --tag v0.3.10-win.1 [--ref main] [--repo owner/name]
+  bash scripts/release-win.sh [--tag v0.3.10-win.1] [--ref main] [--repo owner/name]
+                             [--download-dir DIR] [--no-download]
   bash scripts/release-win.sh --repo owner/name --run-id 123456 [--tag v0.3.10-win.1]
   bash scripts/release-win.sh --repo owner/name --request-id REQUEST_ID
   bash scripts/release-win.sh --notify-test
 
+不指定 --tag 时，按远端 package.json 版本自动生成 v<版本>-win.<N>（N 取已有标签/Release 的最大值 + 1）。
+打包成功后自动下载 Release 中的 .exe 到 release-downloads/<tag>/（--download-dir 可改目录，--no-download 关闭）。
+退出码：0 成功；1 失败；2 云端取消；3 打包成功但 EXE 下载失败；124 超时。
 默认从 origin 读取仓库名，从当前分支读取 ref；打包前自动推送已有提交。
 未提交改动必须先手动提交。推送仅限当前分支，目标仓库必须与打包仓库一致。
 首次使用 workflow 必须存在于默认分支；默认分支以外不会自动合并或推送默认分支。
@@ -246,6 +305,7 @@ main() {
   export GH_HOST=github.com GH_PROMPT_DISABLED=1 GH_PAGER=cat
   export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
   repo='' ref='' tag='' run_id='' request_id='' source_sha='' run_url=''
+  download_dir='' no_download=0 download_message=''
   local allow_remote=0 notify_test=0 option value remote sha_local
   RETRY_ATTEMPTS=${RETRY_ATTEMPTS:-5}
   RETRY_DELAY_SECONDS=${RETRY_DELAY_SECONDS:-2}
@@ -263,13 +323,15 @@ main() {
       --help|-h) usage; return 0 ;;
       --allow-remote) allow_remote=1 ;;
       --notify-test) notify_test=1 ;;
-      --repo|--ref|--tag|--run-id|--request-id)
+      --no-download) no_download=1 ;;
+      --repo|--ref|--tag|--run-id|--request-id|--download-dir)
         (( $# )) || { log "$option 缺少参数"; return 1; }
         value=$1; shift
         [[ -n $value && $value != --* ]] || { log "$option 参数无效"; return 1; }
         case "$option" in
           --repo) repo=$value ;; --ref) ref=$value ;; --tag) tag=$value ;;
           --run-id) run_id=$value ;; --request-id) request_id=$value ;;
+          --download-dir) download_dir=$value ;;
         esac ;;
       *) log "未知参数：$option"; usage; return 1 ;;
     esac
@@ -300,7 +362,6 @@ main() {
   trap 'failure_message="收到终止信号，仅停止本地监控；云端任务未取消"; exit 143' TERM
   if [[ -n $run_id ]]; then monitor; return; fi
   if [[ -n $request_id ]]; then discover; monitor; return; fi
-  [[ -n $tag ]] || { failure_message='必须使用 --tag 指定 Release 标签'; return 1; }
   [[ -n $ref ]] || ref=$(git symbolic-ref --quiet --short HEAD) || { failure_message='分离 HEAD 状态请使用 --ref'; return 1; }
   if (( ! allow_remote )); then
     local worktree_status
@@ -315,6 +376,7 @@ main() {
     sha_local=$(git rev-parse HEAD)
     [[ $sha_local == "$source_sha" ]] || { failure_message='推送后本地 HEAD 与远端 ref 不一致（可能被并发修改），已停止构建；请核实后重试'; return 1; }
   fi
+  [[ -n $tag ]] || generate_tag
   # Read request with retries; missing workflow fails before attempting a dispatch.
   retry gh api "repos/$repo/actions/workflows/release-win.yml" --jq '.state' >/dev/null
   request_id="$(date -u '+%Y%m%dT%H%M%S')-$$-$RANDOM-$RANDOM"

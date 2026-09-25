@@ -24,6 +24,16 @@ case "$1 $2" in
     if [[ $SCENARIO == ambiguous ]]; then echo 'lost response' >&2; exit 1; fi ;;
   'api repos/demo/reader/commits/main') printf '%040d\n' 1 ;;
   'api repos/demo/reader/actions/workflows/release-win.yml') echo active ;;
+  'api repos/demo/reader/contents/package.json?ref=0000000000000000000000000000000000000001') echo 0.3.10 ;;
+  'api repos/demo/reader/git/matching-refs/tags/v0.3.10-win.')
+    printf '%s\n' refs/tags/v0.3.10-win.1 refs/tags/v0.3.10-win.3 refs/tags/v0.3.10-win.x ;;
+  'api repos/demo/reader/releases?per_page=100') printf '%s\n' v0.3.9 v0.3.10-win.4 v0.3.10 ;;
+  'release download')
+    printf '%s\n' "$*" >> "$MOCK_STATE/downloads"
+    if [[ $SCENARIO == dlfail ]]; then echo 'HTTP 404' >&2; exit 1; fi
+    dir=''; prev=''
+    for a in "$@"; do [[ $prev == --dir ]] && dir=$a; prev=$a; done
+    mkdir -p "$dir"; : > "$dir/MD Reader_0.3.10_x64-setup.exe" ;;
   'api repos/demo/reader/actions/runs/987')
     n=0; [[ ! -f $MOCK_STATE/polls ]] || n=$(cat "$MOCK_STATE/polls")
     n=$((n+1)); echo "$n" > "$MOCK_STATE/polls"
@@ -69,10 +79,11 @@ chmod +x "$tmp/bin/gh" "$tmp/bin/powershell.exe"
 run_case() {
   local scenario=$1 expected=$2 rc count; shift 2
   mkdir -p "$tmp/$scenario"
-  if env PATH="$tmp/bin:$PATH" MOCK_STATE="$tmp/$scenario" SCENARIO="$scenario" \
+  # Run inside the case dir so default relative downloads never touch the repo.
+  if (cd "$tmp/$scenario" && env PATH="$tmp/bin:$PATH" MOCK_STATE="$tmp/$scenario" SCENARIO="$scenario" \
     RETRY_ATTEMPTS=3 RETRY_DELAY_SECONDS=1 POLL_INTERVAL_SECONDS=1 \
     REQUEST_TIMEOUT_SECONDS=5 DISCOVERY_TIMEOUT_SECONDS=5 MONITOR_TIMEOUT_SECONDS=10 \
-    bash "$root/scripts/release-win.sh" --repo demo/reader "$@" >"$tmp/$scenario/log" 2>&1; then rc=0; else rc=$?; fi
+    bash "$root/scripts/release-win.sh" --repo demo/reader "$@" >"$tmp/$scenario/log" 2>&1); then rc=0; else rc=$?; fi
   if [[ $rc != "$expected" ]]; then cat "$tmp/$scenario/log"; echo "FAIL $scenario: $rc != $expected"; exit 1; fi
   count=$(wc -l < "$tmp/$scenario/notifications")
   [[ $count -eq 1 ]] || { echo "FAIL $scenario: expected one notification"; exit 1; }
@@ -113,4 +124,20 @@ done
 [[ ! -f $tmp/pushreject/dispatched ]]
 # Remote-only and monitor/resume modes must not even call Git.
 for scenario in dispatch resume success; do [[ ! -f $tmp/$scenario/git-calls ]]; done
-echo 'All 17 offline release-win tests passed. No real push, GitHub request or popup was made.'
+# Auto tag: max(win.1, win.3, release win.4) + 1 = win.5; exe downloaded to the default dir.
+run_case autotag 0 --ref main --allow-remote
+grep -q 'release_tag=v0.3.10-win.5' "$tmp/autotag/calls"
+grep -q '^release download v0.3.10-win.5 --repo demo/reader --pattern \*.exe --dir release-downloads/v0.3.10-win.5 --clobber$' "$tmp/autotag/downloads"
+grep -q 'EXE 已下载' "$tmp/autotag/notifications"
+[[ -f "$tmp/autotag/release-downloads/v0.3.10-win.5/MD Reader_0.3.10_x64-setup.exe" ]]
+# Custom download dir and opt-out.
+run_case dldir 0 --run-id 987 --tag v0.3.10-win.1 --download-dir "$tmp/dl"
+[[ -f "$tmp/dl/MD Reader_0.3.10_x64-setup.exe" ]]
+run_case nodl 0 --run-id 987 --tag v0.3.10-win.1 --no-download
+[[ ! -f $tmp/nodl/downloads ]]
+# Build succeeded but download failed: exit 3, still exactly one notification.
+run_case dlfail 3 --run-id 987 --tag v0.3.10-win.1 --download-dir "$tmp/dlfail-out"
+grep -q '下载失败' "$tmp/dlfail/notifications"
+# Monitoring without a tag cannot know which release to download.
+[[ ! -f $tmp/success/downloads ]]
+echo 'All 21 offline release-win tests passed. No real push, GitHub request or popup was made.'
