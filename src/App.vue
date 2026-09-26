@@ -50,6 +50,8 @@ const editSource = ref("");
 const originalSource = ref("");
 const dirty = computed(() => editing.value && editSource.value !== originalSource.value);
 const editor = shallowRef<HTMLTextAreaElement | null>(null);
+// Reading position captured right before the article is hidden for editing.
+let editAnchor: ReadingAnchor | undefined;
 function canLeaveEdit() {
   return !saving.value && (!dirty.value || window.confirm("编辑内容尚未保存，确定放弃修改吗？"));
 }
@@ -62,6 +64,11 @@ async function startEditing() {
     // Keep the source only during editing; normal reading remains bounded and virtualized.
     originalSource.value = data.source;
     editSource.value = data.source;
+    // Capture BEFORE hiding the article: a hidden article has no geometry, so any
+    // capture() while editing would produce (and persist) a bogus position.
+    editAnchor = virtualReader?.capture();
+    flushPosition();
+    positionReady = false;
     editing.value = true;
     closeFind();
     await nextTick();
@@ -73,21 +80,42 @@ function stopEditing() {
   editing.value = false;
   editSource.value = "";
   originalSource.value = "";
+  restoreAfterEditing();
+}
+/** The article is visible again after the next DOM update: re-measure, then restore. */
+function restoreAfterEditing() {
+  const anchor = editAnchor;
+  const view = virtualReader;
+  editAnchor = undefined;
+  void nextTick(() => {
+    if (disposed || editing.value || !view || virtualReader !== view) return;
+    // Heights may have been re-estimated with a zero width while hidden.
+    view.invalidate();
+    if (anchor) view.restore(anchor);
+    positionReady = true;
+    schedulePosition();
+    readingArea.value?.focus({ preventScroll: true });
+  });
 }
 async function saveEditing() {
   if (!editing.value || saving.value || !currentFile.value) return;
   const path = currentFile.value;
   const source = editSource.value;
   saving.value = true;
+  let saved = false;
   try {
     await invoke("save_document", { path, source, expected: originalSource.value });
-    originalSource.value = source;
-    editing.value = false;
-    editSource.value = "";
-    originalSource.value = "";
-    loadFile(path);
+    saved = true;
   } catch (failure) { error.value = `保存失败：${String(failure)}`; }
   finally { saving.value = false; }
+  // Reload only after `saving` is cleared: canLeaveEdit() (called by loadFile) rejects while saving.
+  if (!saved || disposed || currentFile.value !== path) return;
+  editing.value = false;
+  editSource.value = "";
+  originalSource.value = "";
+  // The reload restores the progress flushed in startEditing() (positionReady stays false until then).
+  editAnchor = undefined;
+  loadFile(path);
 }
 const error = ref("");
 const tocVisible = ref(true);
@@ -155,7 +183,8 @@ function flushWhenHidden() {
 function updatePosition() {
   scrollFrame = 0;
   const area = readingArea.value;
-  if (!area || !currentFile.value) return;
+  // While editing, the reading area scrolls the textarea, not the hidden article.
+  if (!area || !currentFile.value || editing.value) return;
   const range = area.scrollHeight - area.clientHeight;
   progress.value = range > 0 ? Math.round((area.scrollTop / range) * 100) : 100;
   activeId.value = virtualReader?.activeHeading() || "";
@@ -313,7 +342,7 @@ const loader = createLatestLoader(
 );
 function loadFile(path: string, hash = "") {
   if (disposed || !canLeaveEdit()) return;
-  editing.value = false; editSource.value = ""; originalSource.value = "";
+  editing.value = false; editSource.value = ""; originalSource.value = ""; editAnchor = undefined;
   ++interaction;
   preview.dispose();
   clearDocument();
@@ -324,7 +353,7 @@ function loadFile(path: string, hash = "") {
 }
 function closeDocument() {
   if (!canLeaveEdit()) return;
-  editing.value = false; editSource.value = ""; originalSource.value = "";
+  editing.value = false; editSource.value = ""; originalSource.value = ""; editAnchor = undefined;
   ++interaction;
   loader.cancel();
   preview.dispose();

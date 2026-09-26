@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, onMounted, onBeforeUnmount, watch } from "vue";
+import { computed, nextTick, ref, shallowRef, onMounted, onBeforeUnmount, watch } from "vue";
 import type { Heading } from "../reader/document";
 import { buildOutline, filterOutline } from "../reader/outline";
 import ReaderIcon from "./ReaderIcon.vue";
@@ -20,12 +20,59 @@ const start = computed(() => isVirtual.value ? Math.max(0, Math.floor(scrollTop.
 const end = computed(() => isVirtual.value ? Math.min(visible.value.length, Math.ceil((scrollTop.value + viewport.value) / rowHeight) + 8) : visible.value.length);
 const rows = computed(() => visible.value.slice(start.value, end.value));
 let observer: ResizeObserver | undefined;
+// Follow the reading position, but never fight a reader who is scrolling the outline.
+const FOLLOW_PAUSE_MS = 1500;
+let manualUntil = 0;
+function pauseFollow() { manualUntil = performance.now() + FOLLOW_PAUSE_MS; }
+/** Index of the active heading, or of its nearest visible (e.g. collapsed) ancestor. */
+function activeIndex(): number {
+  const list = visible.value;
+  const exact = list.findIndex((entry) => entry.id === props.activeId);
+  if (exact >= 0 || !props.activeId) return exact;
+  const entry = entries.value.find((item) => item.id === props.activeId);
+  if (!entry) return -1;
+  for (let i = entry.ancestors.length - 1; i >= 0; i--) {
+    const at = list.findIndex((item) => item.id === entry.ancestors[i]);
+    if (at >= 0) return at;
+  }
+  return -1;
+}
+async function revealActive(force = false) {
+  if (!force && performance.now() < manualUntil) return;
+  const el = nav.value;
+  const index = activeIndex();
+  if (!el || index < 0) return;
+  if (isVirtual.value) {
+    // Virtual rows may not be mounted: compute the offset from the fixed row height.
+    const top = index * rowHeight;
+    if (top < el.scrollTop || top + rowHeight > el.scrollTop + el.clientHeight) {
+      el.scrollTop = Math.max(0, top - el.clientHeight / 3);
+      scrollTop.value = el.scrollTop;
+    }
+    return;
+  }
+  await nextTick();
+  const row = el.querySelectorAll<HTMLElement>(".toc-row")[index];
+  if (!row) return;
+  // Rect-based: independent of which ancestor is the offsetParent.
+  const rowTop = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+  if (rowTop < el.scrollTop || rowTop + row.offsetHeight > el.scrollTop + el.clientHeight) {
+    el.scrollTop = Math.max(0, rowTop - el.clientHeight / 3);
+  }
+}
 onMounted(() => {
   observer = new ResizeObserver(() => { viewport.value = nav.value?.clientHeight || 600; });
   if (nav.value) observer.observe(nav.value);
+  // Re-mounted (e.g. after leaving edit mode or re-showing the outline): jump to the current section.
+  void nextTick(() => revealActive(true));
 });
 onBeforeUnmount(() => observer?.disconnect());
-watch(visible, () => { scrollTop.value = 0; if (nav.value) nav.value.scrollTop = 0; });
+watch(visible, () => {
+  scrollTop.value = 0;
+  if (nav.value) nav.value.scrollTop = 0;
+  void revealActive(true);
+});
+watch(() => props.activeId, () => void revealActive());
 function onScroll() { scrollTop.value = nav.value?.scrollTop || 0; }
 watch(
   () => props.headings,
@@ -99,7 +146,7 @@ function collapseAll() {
         </button>
       </div>
     </div>
-    <nav ref="nav" class="toc-list" :class="{ 'toc-virtual': isVirtual }" aria-label="章节导航" @scroll.passive="onScroll">
+    <nav ref="nav" class="toc-list" :class="{ 'toc-virtual': isVirtual }" aria-label="章节导航" @scroll.passive="onScroll" @wheel.passive="pauseFollow" @touchmove.passive="pauseFollow" @pointerdown="pauseFollow" @keydown="pauseFollow">
       <div v-if="isVirtual" aria-hidden="true" :style="{ height: `${start * rowHeight}px` }"></div>
       <div
         v-for="entry in rows"
