@@ -45,6 +45,13 @@ async fn read_document(path: String) -> Result<reader::Document, String> {
         .map_err(|e| format!("读取任务失败：{e}"))?
 }
 
+#[tauri::command]
+async fn save_document(path: String, source: String, expected: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || reader::save_document(&path, &source, &expected))
+        .await
+        .map_err(|e| format!("保存任务失败：{e}"))?
+}
+
 // Enumerate installed system font family names, deduplicated and sorted.
 // Runs on a blocking thread: fontdb scans platform font directories on load.
 #[tauri::command]
@@ -104,6 +111,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             read_document,
+            save_document,
             take_pending_open_file,
             list_system_fonts,
             startup::reveal_main_window

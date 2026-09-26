@@ -1017,3 +1017,11 @@ select {
 .toc-virtual .toc-row { height: 42px; margin-bottom: 0; overflow: hidden; }
 .toc-virtual .toc-row a { white-space: nowrap; overflow: hidden; }
 .toc-virtual .toc-row a > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+
+/* Source editor is mounted only while editing; reading DOM stays intact for return. */
+.editor-pane { display: flex; flex-direction: column; gap: 10px; padding: 20px 28px; min-height: calc(100% - 40px); box-sizing: border-box; }
+.editor-pane label { font-weight: 600; color: var(--td-text-color-primary, inherit); }
+.editor-pane textarea { flex: 1; min-height: 55vh; width: 100%; box-sizing: border-box; resize: vertical; padding: 16px; border: 1px solid #9997; border-radius: 8px; background: transparent; color: inherit; font: 15px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 2; }
+.editor-pane textarea:focus { outline: 2px solid #628ccb; outline-offset: 1px; }
+.editor-pane small, .edit-dirty { opacity: .72; }
+.markdown-body[hidden] { display: none; }

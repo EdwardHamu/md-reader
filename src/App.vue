@@ -44,6 +44,51 @@ const body = shallowRef<HTMLElement | null>(null);
 const headings = shallowRef<Heading[]>([]);
 const currentFile = ref("");
 const loading = ref(false);
+const editing = ref(false);
+const saving = ref(false);
+const editSource = ref("");
+const originalSource = ref("");
+const dirty = computed(() => editing.value && editSource.value !== originalSource.value);
+const editor = shallowRef<HTMLTextAreaElement | null>(null);
+function canLeaveEdit() {
+  return !saving.value && (!dirty.value || window.confirm("编辑内容尚未保存，确定放弃修改吗？"));
+}
+async function startEditing() {
+  if (!currentFile.value || editing.value || loading.value) return;
+  const path = currentFile.value;
+  try {
+    const data = await invoke<DocumentData>("read_document", { path });
+    if (disposed || currentFile.value !== path || loading.value) return;
+    // Keep the source only during editing; normal reading remains bounded and virtualized.
+    originalSource.value = data.source;
+    editSource.value = data.source;
+    editing.value = true;
+    closeFind();
+    await nextTick();
+    editor.value?.focus();
+  } catch (failure) { error.value = `无法进入编辑模式：${String(failure)}`; }
+}
+function stopEditing() {
+  if (!canLeaveEdit()) return;
+  editing.value = false;
+  editSource.value = "";
+  originalSource.value = "";
+}
+async function saveEditing() {
+  if (!editing.value || saving.value || !currentFile.value) return;
+  const path = currentFile.value;
+  const source = editSource.value;
+  saving.value = true;
+  try {
+    await invoke("save_document", { path, source, expected: originalSource.value });
+    originalSource.value = source;
+    editing.value = false;
+    editSource.value = "";
+    originalSource.value = "";
+    loadFile(path);
+  } catch (failure) { error.value = `保存失败：${String(failure)}`; }
+  finally { saving.value = false; }
+}
 const error = ref("");
 const tocVisible = ref(true);
 const readingArea = shallowRef<HTMLElement | null>(null);
@@ -267,7 +312,8 @@ const loader = createLatestLoader(
   }
 );
 function loadFile(path: string, hash = "") {
-  if (disposed) return;
+  if (disposed || !canLeaveEdit()) return;
+  editing.value = false; editSource.value = ""; originalSource.value = "";
   ++interaction;
   preview.dispose();
   clearDocument();
@@ -277,6 +323,8 @@ function loadFile(path: string, hash = "") {
   loader.request({ path, hash });
 }
 function closeDocument() {
+  if (!canLeaveEdit()) return;
+  editing.value = false; editSource.value = ""; originalSource.value = "";
   ++interaction;
   loader.cancel();
   preview.dispose();
@@ -425,6 +473,12 @@ function keydown(event: KeyboardEvent) {
     }
   }
   const key = event.key.toLowerCase();
+  if (mod && key === "s" && editing.value) {
+    event.preventDefault(); void saveEditing(); return;
+  }
+  if (editing.value && key === "escape" && !findVisible.value) {
+    event.preventDefault(); stopEditing(); return;
+  }
   if (mod && event.shiftKey && key === "c" && currentFile.value && !isEditingTarget(event.target)) {
     event.preventDefault();
     void copyCurrentPath();
@@ -578,6 +632,15 @@ onBeforeUnmount(() => {
         <ReaderIcon :name="pathCopied ? 'check' : 'copy'" />
       </button>
       <div class="reading-tools">
+        <button v-if="currentFile && !editing" class="tonal-button" type="button"
+          title="编辑当前文件" @click="startEditing">编辑</button>
+        <template v-if="editing">
+          <span v-if="dirty" class="edit-dirty" aria-label="未保存的修改">未保存</span>
+          <button class="filled-button" type="button" :disabled="saving"
+            title="保存到原文件 (Ctrl+S)" @click="saveEditing">{{ saving ? "保存中…" : "保存" }}</button>
+          <button class="tonal-button" type="button" :disabled="saving"
+            @click="stopEditing">返回阅读</button>
+        </template>
         <button
           class="icon-button"
           type="button"
@@ -773,7 +836,7 @@ onBeforeUnmount(() => {
     </div>
     <div class="workspace">
       <DocumentOutline
-        v-if="tocVisible && headings.length"
+        v-if="!editing && tocVisible && headings.length"
         id="document-outline"
         :headings="headings"
         :active-id="activeId"
@@ -810,7 +873,13 @@ onBeforeUnmount(() => {
           </div>
           <small>UTF-8 · 最大 8 MiB · 不编辑、不扫描目录</small>
         </div>
-        <div v-if="currentFile" class="document-meta">
+        <div v-if="editing" class="editor-pane">
+          <label for="markdown-editor">Markdown 源码 · {{ fileName }}</label>
+          <textarea id="markdown-editor" ref="editor" v-model="editSource" :disabled="saving"
+            spellcheck="false" aria-label="Markdown 编辑器"></textarea>
+          <small>Ctrl+S 保存到原文件 · Esc 返回阅读 · 最大 8 MiB</small>
+        </div>
+        <div v-if="currentFile && !editing" class="document-meta">
           <span class="eyebrow">MARKDOWN DOCUMENT</span
           ><span class="readonly-chip">只读 · 安心阅读</span>
         </div>
@@ -818,6 +887,7 @@ onBeforeUnmount(() => {
         <article
           ref="body"
           class="markdown-body"
+          :hidden="editing"
           :style="{
             fontSize: `${fontSize}px`,
             fontFamily: fonts.fontFamily.value || undefined,
@@ -844,7 +914,7 @@ onBeforeUnmount(() => {
     <footer class="status-bar">
       <span class="status-dot" aria-hidden="true"></span
       ><span>{{
-        loading ? "正在读取" : currentFile ? (virtualized ? "虚拟阅读 · Ctrl F 全文查找" : "本地文档 · 只读模式") : "准备就绪"
+        loading ? "正在读取" : editing ? (dirty ? "编辑模式 · 未保存" : "编辑模式") : currentFile ? (virtualized ? "虚拟阅读 · Ctrl F 全文查找" : "本地文档 · 只读模式") : "准备就绪"
       }}</span
       ><span class="status-hint" title="gg 顶端 · G 底端 · d/e 下滑/上滑半屏 · / 正则查找 · Esc 退出查找">{{ currentFile ? "gg / G 首尾 · d / e 滚动 · / 正则" : "Ctrl O 打开 · Ctrl F 查找" }}</span
       ><span v-if="currentFile" class="reading-progress"

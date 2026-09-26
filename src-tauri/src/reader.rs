@@ -1,6 +1,6 @@
 //! Read-only, bounded file loading. No directory scanning, watching or document cache.
 use serde::Serialize;
-use std::{fs::File, io::Read, path::Path};
+use std::{fs::{File, OpenOptions}, io::{Read, Write}, path::Path};
 
 pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -63,6 +63,26 @@ pub fn read_document(path: &str) -> Result<Document, String> {
         path: display_path(&path),
         source,
     })
+}
+
+
+// Require the exact source originally opened in the editor to prevent silent overwrites.
+pub fn save_document(path: &str, source: &str, expected: &str) -> Result<(), String> {
+    let input = Path::new(path);
+    if !is_markdown(input) { return Err("只支持 Markdown / 文本文件。".into()); }
+    if source.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err("内容超过 8 MiB，无法保存。".into());
+    }
+    let canonical = input.canonicalize().map_err(|e| format!("无法打开文件：{e}"))?;
+    if !canonical.is_file() { return Err("请选择文件，而不是文件夹。".into()); }
+    if read_document(path)?.source != expected {
+        return Err("文件已在外部更改，请复制当前编辑内容后重新打开，避免覆盖。".into());
+    }
+    let mut file = OpenOptions::new().write(true).truncate(true).open(&canonical)
+        .map_err(|e| format!("无法写入文件：{e}"))?;
+    file.write_all(source.as_bytes()).map_err(|e| format!("保存失败：{e}"))?;
+    file.sync_all().map_err(|e| format!("同步文件失败：{e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
