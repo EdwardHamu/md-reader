@@ -8,6 +8,11 @@ interface ProgressStorage {
   setItem(key: string, value: string): void;
 }
 
+export interface RecentFileEntry {
+  path: string;
+  anchor: ReadingAnchor;
+}
+
 function isAnchor(value: unknown): value is ReadingAnchor {
   if (!value || typeof value !== "object") return false;
   const { block, offset } = value as Partial<ReadingAnchor>;
@@ -43,6 +48,12 @@ export function createReadingProgressStore(storage: ProgressStorage | null) {
     get(path: string): ReadingAnchor | undefined {
       const anchor = positions.get(path);
       return anchor && { ...anchor };
+    },
+    /** A snapshot ordered from most recently opened to oldest. */
+    list(): RecentFileEntry[] {
+      return [...positions]
+        .reverse()
+        .map(([path, anchor]) => ({ path, anchor: { ...anchor } }));
     },
     remember(path: string, anchor: ReadingAnchor): boolean {
       if (!path || !isAnchor(anchor)) return false;

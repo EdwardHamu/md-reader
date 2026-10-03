@@ -16,6 +16,7 @@ const paths: Record<string, string> = {
   down: "m6 10 6 6 6-6",
   copy: "M9 9h11v11H9z M5 15H4V4h11v1",
   check: "M5 12l5 5L20 7",
+  history: "M3 12a9 9 0 1 0 3-6.7L3 8 M3 3v5h5 M12 7v5l3 2",
 };
 </script>
 

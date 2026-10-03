@@ -31,6 +31,7 @@ import { createVirtualReader, type VirtualReader, type ReadingAnchor } from "./r
 import ReaderIcon from "./components/ReaderIcon.vue";
 import DocumentOutline from "./components/DocumentOutline.vue";
 import PreviewContent from "./components/PreviewContent.vue";
+import RecentFilesPanel from "./components/RecentFilesPanel.vue";
 
 interface DocumentData {
   path: string;
@@ -158,6 +159,23 @@ let scrollFrame = 0;
 const readingProgress = createReadingProgressStore((() => {
   try { return window.localStorage; } catch { return null; }
 })());
+const recentVisible = ref(false);
+const recentFiles = shallowRef(readingProgress.list().map((entry) => entry.path));
+function refreshRecentFiles() {
+  recentFiles.value = readingProgress.list().map((entry) => entry.path);
+}
+function showRecentFiles() {
+  flushPosition();
+  refreshRecentFiles();
+  fontPanelVisible.value = false;
+  closeFind();
+  recentVisible.value = true;
+}
+function openRecentFile(path: string) {
+  recentVisible.value = false;
+  if (path === currentFile.value) readingArea.value?.focus({ preventScroll: true });
+  else loadFile(path);
+}
 let positionReady = false;
 let progressTimer = 0;
 function rememberPosition() {
@@ -314,6 +332,9 @@ const loader = createLatestLoader(
     const restoreTop = pendingScrollTop;
     const restoreAnchor = pendingAnchor;
     const remembered = readingProgress.get(path);
+    if (readingProgress.remember(path, remembered ?? { block: 0, offset: 0 }))
+      scheduleProgressFlush();
+    refreshRecentFiles();
     pendingScrollTop = -1;
     pendingAnchor = undefined;
     void nextTick(() => {
@@ -484,7 +505,7 @@ function keydown(event: KeyboardEvent) {
     readingKeys.reset(); return;
   }
   const mod = event.ctrlKey || event.metaKey;
-  if (mod || event.altKey || isEditingTarget(event.target) || loading.value || !currentFile.value || fontPanelVisible.value) {
+  if (mod || event.altKey || isEditingTarget(event.target) || loading.value || !currentFile.value || fontPanelVisible.value || recentVisible.value) {
     readingKeys.reset();
   } else {
     const command = readingKeys.accept(event.key, event.repeat);
@@ -521,6 +542,7 @@ function keydown(event: KeyboardEvent) {
     event.preventDefault();
     closeDocument();
   } else if (key === "escape") {
+    recentVisible.value = false;
     fontPanelVisible.value = false;
     preview.hide();
     closeFind();
@@ -628,6 +650,15 @@ onBeforeUnmount(() => {
           @click="chooseFile"
         >
           <ReaderIcon name="folder" /><span>打开</span>
+        </button>
+        <button
+          class="tonal-button"
+          type="button"
+          title="查看最近打开的文件"
+          :aria-pressed="recentVisible"
+          @click="showRecentFiles"
+        >
+          <ReaderIcon name="history" /><span>最近</span>
         </button>
         <button
           class="tonal-button"
@@ -746,6 +777,8 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </header>
+    <RecentFilesPanel v-if="recentVisible" :files="recentFiles" :current="currentFile"
+      @open="openRecentFile" @close="recentVisible = false" />
     <form
       v-if="findVisible"
       class="find-bar"

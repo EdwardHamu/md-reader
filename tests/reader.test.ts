@@ -36,6 +36,12 @@ test("reading progress: keep the latest 100 file anchors across restarts", () =>
   assert.equal(entries.length, 100);
   assert.equal(entries[0].path, "C:/docs/2.md");
   assert.equal(entries.at(-1)?.path, "C:/docs/100.md");
+  assert.deepEqual(resumed.list().slice(0, 3).map((entry) => entry.path), [
+    "C:/docs/100.md", "C:/docs/0.md", "C:/docs/99.md",
+  ]);
+  const snapshot = resumed.list();
+  snapshot[0].anchor.block = 999;
+  assert.deepEqual(resumed.get("C:/docs/100.md"), { block: 100, offset: 1.25 });
   assert.equal(resumed.get("C:/docs/1.md"), undefined);
   assert.deepEqual(createReadingProgressStore(storage).get("C:/docs/0.md"), { block: 0, offset: 0.5 });
   assert.equal(resumed.remember("C:/docs/100.md", { block: 100, offset: 1.25 }), false);
