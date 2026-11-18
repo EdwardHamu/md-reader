@@ -65,6 +65,13 @@ async function setup(
               state.opened.push(String(args.url));
               return;
             }
+            if (command === "read_document_chunk") {
+              const offset = Number(args.offset);
+              const part = "<script>not markup</script> 中文🙂\n" + "line of source text\n".repeat(35_000);
+              const final = offset === 8 * 1024 * 1024;
+              return { source: part + (final ? "\nEXACT_TAIL_SENTINEL" : ""),
+                nextOffset: final ? 8 * 1024 * 1024 + 256 : offset + 1024 * 1024 };
+            }
             if (command === "read_document") {
               const path = String(args.path);
               state.reads.push(path);
@@ -75,6 +82,8 @@ async function setup(
               );
               state.active--;
               if (path.includes("missing")) throw new Error("file missing");
+              if (path.endsWith("large-fixture.md")) return { path, source: null, bytes: 8 * 1024 * 1024 + 256, modified: "fixture" };
+              if (path.endsWith("budget-fixture.md")) return { path, source: "line\n".repeat(200_001) + "BUDGET_TAIL" };
               return {
                 path,
                 source: path.endsWith("first.md")
@@ -753,4 +762,33 @@ test("virtual: cross-slice search and delayed image measurements preserve the vi
   await page.getByTitle("显示/隐藏目录").click();
   await page.keyboard.press("Control+=");
   await expect(page.locator(".markdown-body p").filter({ hasText: "Paragraph 50" })).toBeInViewport();
+});
+
+test("oversized file opens in a bounded virtual window, searches its tail and stays read-only", async ({ page }) => {
+  await setup(page);
+  await open(page, "C:/docs/large-fixture.md");
+  const article = page.locator("article");
+  await expect(article).toHaveAttribute("data-virtual", "true", { timeout: 15_000 });
+  await expect(page.getByText("纯文本虚拟阅读", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "编辑", exact: true })).toHaveCount(0);
+  await expect(article.locator("script")).toHaveCount(0);
+  await expect(article.locator(".virtual-block").first()).toContainText("<script>not markup</script>");
+  await page.keyboard.press("Control+f");
+  await page.locator("#find-input").fill("EXACT_TAIL_SENTINEL");
+  await expect(article).toContainText("EXACT_TAIL_SENTINEL");
+  expect(await article.locator(".virtual-block").count()).toBeLessThan(32);
+  await open(page, "C:/docs/second.md");
+  await expect(article.locator("h1")).toHaveText("second");
+  await expect(page.getByRole("button", { name: "编辑", exact: true })).toBeVisible();
+});
+
+test("a structural Markdown budget switches to continuously scrollable source text", async ({ page }) => {
+  await setup(page);
+  await open(page, "C:/docs/budget-fixture.md");
+  const article = page.locator("article");
+  await expect(article).toHaveAttribute("data-virtual", "true", { timeout: 15_000 });
+  await page.keyboard.press("Control+f");
+  await page.locator("#find-input").fill("BUDGET_TAIL");
+  await expect(article).toContainText("BUDGET_TAIL");
+  expect(await article.locator(".virtual-block").count()).toBeLessThan(32);
 });

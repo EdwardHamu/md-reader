@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { renderMarkdown } from "./markdown";
+import { DocumentBudgetError, renderMarkdown } from "./markdown";
 import { isSafeExternal, resolveLocalLink, splitBlockAnchor } from "./paths";
 
 export interface Heading {
@@ -46,7 +46,7 @@ export function sanitizeDocumentHtml(
   let count = 0;
   while (walker.nextNode()) {
     if (++count > 60_000)
-      throw new Error("文档超过 60000 个显示节点，请拆分后阅读。");
+      throw new DocumentBudgetError("文档超过 60000 个显示节点，请拆分后阅读。");
   }
   for (const input of fragment.querySelectorAll("input")) {
     if (input.type !== "checkbox") input.remove();
@@ -127,7 +127,7 @@ export function sanitizeDocumentHtml(
     "h1,h2,h3,h4,h5,h6"
   )) {
     if (headings.length >= 20_000)
-      throw new Error("目录超过 20000 个标题，请拆分后阅读。");
+      throw new DocumentBudgetError("目录超过 20000 个标题，请拆分后阅读。");
     if (!heading.id) {
       let id = `reader-heading-${headings.length}`;
       while (used.has(id)) id += "-";

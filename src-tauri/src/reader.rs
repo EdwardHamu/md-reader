@@ -1,8 +1,8 @@
-//! Read-only, bounded file loading. No directory scanning, watching or document cache.
+//! Bounded file reads and atomic saves. No directory scanning, watching or document cache.
 use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -12,6 +12,121 @@ pub const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
 pub struct Document {
     pub path: String,
     pub source: String,
+}
+
+const LARGE_DOCUMENT_CHUNK_BYTES: usize = 1024 * 1024;
+const INVALID_UTF8: &str = "文件不是有效的 UTF-8 文本，请先转换编码。";
+const FILE_CHANGED: &str = "文件在读取时已更改，请重新打开。";
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum OpenDocument {
+    Inline(Document),
+    Large(LargeDocument),
+}
+
+#[derive(Serialize)]
+pub struct LargeDocument {
+    path: String,
+    source: Option<String>,
+    bytes: u64,
+    modified: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChunk {
+    source: String,
+    next_offset: u64,
+}
+
+fn open_markdown(path: &str) -> Result<(PathBuf, File, fs::Metadata), String> {
+    let input = Path::new(path);
+    if !is_markdown(input) {
+        return Err("只支持 .md / .markdown / .mdx / .txt 文件。".into());
+    }
+    let path = input
+        .canonicalize()
+        .map_err(|e| format!("无法打开文件：{e}"))?;
+    if !path.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("请选择文件，而不是文件夹。".into());
+    }
+    let file = File::open(&path).map_err(|e| format!("无法读取文件：{e}"))?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("请选择文件，而不是文件夹。".into());
+    }
+    Ok((path, file, metadata))
+}
+
+fn revision(metadata: &fs::Metadata) -> Option<String> {
+    let time = metadata.modified().ok()?;
+    Some(time.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos().to_string())
+}
+
+fn large_document(path: &Path, metadata: &fs::Metadata) -> OpenDocument {
+    OpenDocument::Large(LargeDocument {
+        path: display_path(path),
+        source: None,
+        bytes: metadata.len(),
+        modified: revision(metadata),
+    })
+}
+
+pub fn open_document(path: &str) -> Result<OpenDocument, String> {
+    let (path, file, metadata) = open_markdown(path)?;
+    if metadata.len() > MAX_DOCUMENT_BYTES {
+        return Ok(large_document(&path, &metadata));
+    }
+    let result = bounded_text(&file);
+    // A file may grow after stat. The bounded read does not allocate the larger file.
+    let current = file.metadata().map_err(|e| e.to_string())?;
+    if current.len() > MAX_DOCUMENT_BYTES {
+        return Ok(large_document(&path, &current));
+    }
+    let source = result?;
+    if current.len() != metadata.len() || revision(&current) != revision(&metadata) {
+        return Err(FILE_CHANGED.into());
+    }
+    Ok(OpenDocument::Inline(Document { path: display_path(&path), source }))
+}
+
+pub fn read_document_chunk(
+    path: &str,
+    offset: u64,
+    size: u64,
+    modified: Option<&str>,
+) -> Result<DocumentChunk, String> {
+    let (_, mut file, metadata) = open_markdown(path)?;
+    fn unchanged(meta: &fs::Metadata, size: u64, modified: Option<&str>) -> bool {
+        meta.len() == size && revision(meta).as_deref() == modified
+    }
+    if !unchanged(&metadata, size, modified) {
+        return Err(FILE_CHANGED.into());
+    }
+    if size <= MAX_DOCUMENT_BYTES || offset >= size {
+        return Err("无效的大文件读取位置。".into());
+    }
+    let count = (size - offset).min(LARGE_DOCUMENT_CHUNK_BYTES as u64) as usize;
+    let mut bytes = vec![0; count];
+    file.seek(SeekFrom::Start(offset))
+        .and_then(|_| file.read_exact(&mut bytes))
+        .map_err(|e| format!("读取文件分段失败：{e}"))?;
+    let current = file.metadata().map_err(|e| e.to_string())?;
+    if !unchanged(&current, size, modified) {
+        return Err(FILE_CHANGED.into());
+    }
+    if let Err(error) = std::str::from_utf8(&bytes) {
+        if error.error_len().is_none() && error.valid_up_to() > 0 && offset + (count as u64) < size {
+            // Return the complete prefix. The next read starts at the truncated character.
+            bytes.truncate(error.valid_up_to());
+        } else {
+            return Err(INVALID_UTF8.into());
+        }
+    }
+    let next_offset = offset + bytes.len() as u64;
+    let source = String::from_utf8(bytes).map_err(|_| INVALID_UTF8.to_owned())?;
+    Ok(DocumentChunk { source, next_offset })
 }
 
 pub fn is_markdown(path: &Path) -> bool {
@@ -46,22 +161,10 @@ fn bounded_text(reader: impl Read) -> Result<String, String> {
 }
 
 pub fn read_document(path: &str) -> Result<Document, String> {
-    let input = Path::new(path);
-    if !is_markdown(input) {
-        return Err("只支持 .md / .markdown / .mdx / .txt 文件。".into());
-    }
-    let path = input
-        .canonicalize()
-        .map_err(|e| format!("无法打开文件：{e}"))?;
-    let metadata = path.metadata().map_err(|e| e.to_string())?;
-    if !metadata.is_file() {
-        return Err("请选择文件，而不是文件夹。".into());
-    }
+    let (path, file, metadata) = open_markdown(path)?;
     if metadata.len() > MAX_DOCUMENT_BYTES {
-        return Err("文件超过 8 MiB，请拆分后阅读。".into());
+        return Err("文件超过 8 MiB，无法进入编辑模式。".into());
     }
-    let file = File::open(&path).map_err(|e| format!("无法读取文件：{e}"))?;
-    // take(MAX+1) also bounds files that grow after the metadata check.
     let source = bounded_text(file)?;
     Ok(Document {
         path: display_path(&path),
@@ -193,6 +296,43 @@ mod tests {
             .unwrap_err()
             .contains("8 MiB"));
     }
+    #[test]
+    fn large_document_reads_every_byte_without_splitting_utf8() {
+        let dir = Scratch::new("large");
+        let text = "a".repeat(LARGE_DOCUMENT_CHUNK_BYTES - 1) + "🙂\r\n"
+            + &"文".repeat(MAX_DOCUMENT_BYTES as usize / 3) + "\nTHE END";
+        let path = dir.file("large.md", &text);
+        let path = path.to_str().unwrap();
+        let OpenDocument::Large(info) = open_document(path).unwrap() else { panic!("expected large mode"); };
+        assert_eq!(info.bytes, text.len() as u64);
+        assert!(info.source.is_none());
+        assert!(read_document(path).is_err());
+        let stamp = info.modified.as_deref();
+        let chunk = read_document_chunk(path, 0, info.bytes, stamp).unwrap();
+        assert_eq!(chunk.next_offset as usize, LARGE_DOCUMENT_CHUNK_BYTES - 1);
+        let mut all = chunk.source;
+        let mut offset = chunk.next_offset;
+        while offset < info.bytes {
+            let chunk = read_document_chunk(path, offset, info.bytes, stamp).unwrap();
+            assert!(chunk.next_offset > offset);
+            assert!(chunk.source.len() <= LARGE_DOCUMENT_CHUNK_BYTES);
+            all.push_str(&chunk.source);
+            offset = chunk.next_offset;
+        }
+        assert!(all == text, "the streamed document must contain all original bytes");
+        assert!(read_document_chunk(path, info.bytes, info.bytes, stamp).is_err());
+        fs::write(path, "changed").unwrap();
+        assert!(read_document_chunk(path, 0, info.bytes, stamp).err().unwrap().contains("更改"));
+    }
+
+    #[test]
+    fn open_document_keeps_the_inline_protocol_for_small_files() {
+        let dir = Scratch::new("inline");
+        let path = dir.file("note.md", "# 标题\n");
+        let OpenDocument::Inline(doc) = open_document(path.to_str().unwrap()).unwrap() else { panic!("expected inline mode"); };
+        assert_eq!(doc.source, "# 标题\n");
+    }
+
     #[test]
     fn rejects_missing_and_non_markdown() {
         assert!(read_document("missing-md-reader-test.md").is_err());

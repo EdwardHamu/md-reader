@@ -26,6 +26,8 @@ for (const [name, language] of Object.entries({
   hljs.registerLanguage(name, language);
 }
 
+export class DocumentBudgetError extends Error {}
+
 const MAX_HIGHLIGHT_CHARS = 20_000;
 const MAX_TOKENS = 60_000;
 const MAX_HTML_CHARS = 12 * 1024 * 1024;
@@ -72,7 +74,7 @@ function budgetTokens(
     value: (...added: Token[]) => {
       env.tokenCount += added.length;
       if (env.tokenCount > env.limit)
-        throw new Error(`解析超过 ${env.limit} 个语法节点，请拆分后阅读。`);
+        throw new DocumentBudgetError(`解析超过 ${env.limit} 个语法节点，请拆分后阅读。`);
       return Array.prototype.push.apply(tokens, added);
     },
   });
@@ -98,20 +100,20 @@ export function* renderMarkdownChunks(
   source: string,
   limits = { tokens: 400_000, lines: 200_000, tags: 400_000 }
 ): Generator<string> {
-  if (source.length > 8 * 1024 * 1024) throw new Error("文档超过 8 Mi 字符预算。");
+  if (source.length > 8 * 1024 * 1024) throw new DocumentBudgetError("文档超过 8 Mi 字符预算。");
   const normalized = source.replace(/^\uFEFF/, "");
   const matter = /^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.exec(normalized);
   const body = matter ? normalized.slice(matter[0].length) : normalized;
   let lines = 1;
   for (let at = body.indexOf("\n"); at !== -1; at = body.indexOf("\n", at + 1)) {
-    if (++lines > limits.lines) throw new Error(`文档超过 ${limits.lines} 行，请拆分后阅读。`);
+    if (++lines > limits.lines) throw new DocumentBudgetError(`文档超过 ${limits.lines} 行，请拆分后阅读。`);
   }
   const env: RenderBudget = { tokenCount: 0, limit: limits.tokens };
   const tokens = md.parse(body, env);
   let count = 0;
   const visit = (items: Token[]) => {
     for (const token of items) {
-      if (++count > limits.tokens) throw new Error(`文档结构超过 ${limits.tokens} 个语法节点。`);
+      if (++count > limits.tokens) throw new DocumentBudgetError(`文档结构超过 ${limits.tokens} 个语法节点。`);
       if (token.children) visit(token.children);
     }
   };
@@ -119,9 +121,9 @@ export function* renderMarkdownChunks(
   let characters = 0, tags = 0;
   function checked(html: string) {
     characters += html.length;
-    if (characters > MAX_HTML_CHARS) throw new Error("渲染结果超过 12 Mi 字符，请拆分文档后阅读。");
+    if (characters > MAX_HTML_CHARS) throw new DocumentBudgetError("渲染结果超过 12 Mi 字符，请拆分文档后阅读。");
     for (let at = html.indexOf("<"); at !== -1; at = html.indexOf("<", at + 1)) {
-      if (++tags > limits.tags) throw new Error(`文档超过 ${limits.tags} 个 HTML 标记，请拆分后阅读。`);
+      if (++tags > limits.tags) throw new DocumentBudgetError(`文档超过 ${limits.tags} 个 HTML 标记，请拆分后阅读。`);
     }
     return html;
   }

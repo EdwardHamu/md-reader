@@ -21,7 +21,7 @@ Editing/saving, tabs, a recent-files list and automatic session restoration, fil
 - Current DOM only; no retained source/HTML history, background worker or multi-document cache.
 - Markdown/highlighting loaded on first open; theme/font changes do not re-parse documents.
 - One in-flight read plus the latest pending path; stale results are discarded.
-- UTF-8 files up to **8 MiB**; up to 60,000 lines, 60,000 tokens allocated during parsing, 60,000 HTML markers (including closing tags), 60,000 display nodes, 3,000 headings and 12 Mi characters of rendered HTML. Limits produce explicit errors, not silent truncation.
+- UTF-8 files over **8 MiB** open in a virtual plain-text view. The same view is used when the Markdown rendering budget is exceeded. Editing and saving retain the 8 MiB limit. Both views support scrolling and Ctrl+F search. The plain-text view does not render Markdown formatting or an outline.
 - Token allocations are guarded during parsing, and HTML markers are bounded before DOM construction. Bare URLs are not auto-detected: use `[title](https://example.com)` or `<https://example.com>` syntax.
 - Code blocks over 20,000 characters remain plain text.
 - Find keeps at most 1,000 Ranges, debounces 150 ms and does not insert wrapper nodes. Matches are within individual text nodes. Older WebViews without CSS Highlights fall back to selecting the current result.

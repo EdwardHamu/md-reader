@@ -347,3 +347,26 @@ test("find spans virtual slices of one block without crossing semantic boundarie
   assert.equal(findText([{ text: "one", group: 1 }, { text: "two", group: 2 }], "onetwo").matches.length, 0);
   assert.equal(findText([{ text: "aa", group: 1 }, { text: "aa", group: 1 }, { text: "aa", group: 1 }], "aaa").matches.length, 2);
 });
+
+test("large text slices preserve all lines, Unicode, and cross-slice matches", async () => {
+  const { buildTextVirtualDocument } = await import("../src/reader/text-document.ts");
+  const { findText } = await import("../src/reader/virtual-index.ts");
+  const input = "a".repeat(5999) + "🙂\r\n" + "short\r\n".repeat(160) + "\nTAIL";
+  const doc = await buildTextVirtualDocument([input.slice(0, 6000), input.slice(6000, 6002), input.slice(6002)]);
+  assert.equal(doc.textOnly, true);
+  assert.equal(doc.blocks.map((block) => block.text).join(""), input);
+  assert.ok(doc.blocks.every(({ html, text }) => html === null && text.length <= 6000 && !/[\uD800-\uDBFF]$/.test(text)));
+  assert.equal(findText(doc.blocks, "a🙂\r\n").matches.length, 1);
+});
+
+test("large text builder stops after a superseding open", async () => {
+  const { buildTextVirtualDocument } = await import("../src/reader/text-document.ts");
+  let cancelled = false;
+  async function* chunks() {
+    yield "first\n";
+    cancelled = true;
+    yield "late\n";
+    assert.fail("the cancelled loader must not request more chunks");
+  }
+  await assert.rejects(buildTextVirtualDocument(chunks(), () => cancelled), { name: "AbortError" });
+});

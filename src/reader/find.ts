@@ -82,7 +82,13 @@ export function useFind(reader: () => VirtualReader | undefined) {
           if (worker !== task) return;
           stopWorker(); searchError.value = "正则搜索超时，请简化表达式。";
         }, 1500);
-        task.postMessage({ blocks: view.model.blocks.map(({ text, group }) => ({ text, group })), query: query.value });
+        task.postMessage({
+          // Don't concatenate a huge plain-text document into one regex input.
+          blocks: view.model.blocks.map(({ text, group }, i) => ({
+            text, group: view.model.textOnly ? Math.floor(i / 16) : group,
+          })),
+          query: query.value,
+        });
       } catch { stopWorker(); searchError.value = "无法启动正则搜索。"; }
       return;
     }

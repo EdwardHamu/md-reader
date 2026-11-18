@@ -13,7 +13,7 @@ export function createVirtualReader(
   changed: () => void
 ) {
   const smooth = createSmoothScroll(area);
-  const virtual = model.blocks.length > 80;
+  const virtual = model.textOnly === true || model.blocks.length > 80;
   const top = document.createElement("div");
   const content = document.createElement("div");
   const bottom = document.createElement("div");
@@ -91,9 +91,16 @@ export function createVirtualReader(
             node = document.createElement("div");
             node.className = "virtual-block";
             node.dataset.block = String(key);
-            node.dataset.kind = model.blocks[key].kind;
-            // Only HTML serialized from DOMPurify's sanitized fragment reaches this sink.
-            node.innerHTML = model.blocks[key].html;
+            const block = model.blocks[key];
+            node.dataset.kind = block.kind;
+            if (block.html === null) {
+              node.style.whiteSpace = "pre-wrap";
+              node.style.overflowWrap = "anywhere";
+              node.textContent = block.text;
+            } else {
+              // Only HTML serialized from DOMPurify's sanitized fragment reaches this sink.
+              node.innerHTML = block.html;
+            }
             mounted.set(key, node); observer.observe(node);
           }
           if (node !== cursor) content.insertBefore(node, cursor);
@@ -234,7 +241,9 @@ export function createVirtualReader(
     const holder = document.createElement("div");
     // A bounded transient snapshot, never mount an offscreen block into the main reader.
     for (let i = block; i < Math.min(block + 4, model.blocks.length); i++) {
-      const shell = document.createElement("div"); shell.innerHTML = model.blocks[i].html;
+      const html = model.blocks[i].html;
+      if (html === null) continue;
+      const shell = document.createElement("div"); shell.innerHTML = html;
       holder.append(...shell.childNodes);
     }
     return findAnchor(holder, hash);

@@ -39,10 +39,21 @@ fn take_pending_open_file(state: State<'_, PendingOpen>) -> Option<String> {
 }
 
 #[tauri::command]
-async fn read_document(path: String) -> Result<reader::Document, String> {
-    tauri::async_runtime::spawn_blocking(move || reader::read_document(&path))
+async fn read_document(path: String) -> Result<reader::OpenDocument, String> {
+    tauri::async_runtime::spawn_blocking(move || reader::open_document(&path))
         .await
         .map_err(|e| format!("读取任务失败：{e}"))?
+}
+
+#[tauri::command]
+async fn read_document_chunk(
+    path: String, offset: u64, size: u64, modified: Option<String>,
+) -> Result<reader::DocumentChunk, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        reader::read_document_chunk(&path, offset, size, modified.as_deref())
+    })
+    .await
+    .map_err(|e| format!("分段读取任务失败：{e}"))?
 }
 
 #[tauri::command]
@@ -111,6 +122,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             read_document,
+            read_document_chunk,
             save_document,
             take_pending_open_file,
             list_system_fonts,

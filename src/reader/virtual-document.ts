@@ -1,14 +1,16 @@
-import { renderMarkdownChunks } from "./markdown";
+import { DocumentBudgetError, renderMarkdownChunks } from "./markdown";
+export { DocumentBudgetError };
 import { sanitizeDocumentHtml, type Heading } from "./document";
 
 export interface VirtualBlock {
-  html: string;
+  html: string | null;
   text: string;
   group: number;
   kind: "heading" | "code" | "prose";
 }
 export interface VirtualDocument {
   blocks: VirtualBlock[];
+  textOnly?: boolean;
   headings: Heading[];
   anchors: Map<string, number>;
   codes: Map<number, { block: number; start: number; length: number }[]>;
@@ -197,7 +199,7 @@ export async function buildVirtualDocument(
         const serialized = part.outerHTML;
         storedCharacters += serialized.length;
         if (storedCharacters > 16 * 1024 * 1024 || index >= 60_000)
-          throw new Error("虚拟文档超过 16 Mi 字符或 60000 块预算，请拆分后阅读。");
+          throw new DocumentBudgetError("虚拟文档超过 16 Mi 字符或 60000 块预算，请拆分后阅读。");
         result.blocks.push({
           html: serialized,
           group: elementGroup,

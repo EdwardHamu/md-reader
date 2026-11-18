@@ -37,6 +37,13 @@ interface DocumentData {
   path: string;
   source: string;
 }
+interface LargeDocumentData {
+  path: string;
+  source: null;
+  bytes: number;
+  modified: string | null;
+}
+interface DocumentChunk { source: string; nextOffset: number }
 interface OpenRequest {
   path: string;
   hash: string;
@@ -45,6 +52,8 @@ const body = shallowRef<HTMLElement | null>(null);
 const headings = shallowRef<Heading[]>([]);
 const currentFile = ref("");
 const loading = ref(false);
+const largeReading = ref(false);
+const textOnly = ref(false);
 const editing = ref(false);
 const saving = ref(false);
 const editSource = ref("");
@@ -57,11 +66,12 @@ function canLeaveEdit() {
   return !saving.value && (!dirty.value || window.confirm("编辑内容尚未保存，确定放弃修改吗？"));
 }
 async function startEditing() {
-  if (!currentFile.value || editing.value || loading.value) return;
+  if (!currentFile.value || editing.value || loading.value || largeReading.value) return;
   const path = currentFile.value;
   try {
-    const data = await invoke<DocumentData>("read_document", { path });
+    const data = await invoke<DocumentData | LargeDocumentData>("read_document", { path });
     if (disposed || currentFile.value !== path || loading.value) return;
+    if (data.source === null) throw new Error("文件超过 8 MiB，只能阅读。请重新打开以虚拟阅读。");
     // Keep the source only during editing; normal reading remains bounded and virtualized.
     originalSource.value = data.source;
     editSource.value = data.source;
@@ -290,12 +300,30 @@ function clearDocument() {
   virtualReader?.dispose();
   virtualReader = undefined;
   virtualized.value = false;
+  largeReading.value = false;
+  textOnly.value = false;
   activeId.value = "";
   progress.value = 0;
   cancelAnimationFrame(scrollFrame);
   scrollFrame = 0;
   body.value?.replaceChildren();
   currentFile.value = "";
+}
+async function* readLargeText(path: string, data: LargeDocumentData, cancelled: () => boolean) {
+  if (!Number.isSafeInteger(data.bytes) || data.bytes <= 0) throw new Error("大文件大小无效。");
+  let offset = 0;
+  while (offset < data.bytes && !cancelled()) {
+    const part = await invoke<DocumentChunk>("read_document_chunk", {
+      path, offset, size: data.bytes, modified: data.modified,
+    });
+    if (cancelled()) throw new DOMException("Document replaced", "AbortError");
+    if (typeof part.source !== "string" || !part.source || !Number.isSafeInteger(part.nextOffset)
+      || part.nextOffset <= offset || part.nextOffset > data.bytes) {
+      throw new Error("文件分段无效，请重新打开。");
+    }
+    offset = part.nextOffset;
+    yield part.source;
+  }
 }
 const loader = createLatestLoader(
   async (request: OpenRequest) => {
@@ -305,19 +333,34 @@ const loader = createLatestLoader(
     const revision = interaction;
     const [renderer, data] = await Promise.allSettled([
       import("./reader/virtual-document"),
-      invoke<DocumentData>("read_document", { path: request.path }),
+      invoke<DocumentData | LargeDocumentData>("read_document", { path: request.path }),
     ]);
     if (data.status === "rejected") throw data.reason;
     if (renderer.status === "rejected") throw renderer.reason;
-    if (disposed || revision !== interaction) throw new DOMException("Document replaced", "AbortError");
-    const model = await renderer.value.buildVirtualDocument(data.value.source, data.value.path,
-      () => disposed || revision !== interaction);
-    return { path: data.value.path, model };
+    const cancelled = () => disposed || revision !== interaction;
+    if (cancelled()) throw new DOMException("Document replaced", "AbortError");
+    const opened = data.value;
+    if (opened.source === null) {
+      const { buildTextVirtualDocument } = await import("./reader/text-document");
+      const model = await buildTextVirtualDocument(readLargeText(request.path, opened, cancelled), cancelled);
+      return { path: opened.path, model, large: true };
+    }
+    try {
+      const model = await renderer.value.buildVirtualDocument(opened.source, opened.path, cancelled);
+      return { path: opened.path, model, large: false };
+    } catch (error) {
+      if (!(error instanceof renderer.value.DocumentBudgetError)) throw error;
+      const { buildTextVirtualDocument } = await import("./reader/text-document");
+      const model = await buildTextVirtualDocument([opened.source], cancelled);
+      return { path: opened.path, model, large: false };
+    }
   },
-  ({ path, model }, request) => {
+  ({ path, model, large }, request) => {
     if (!body.value || !readingArea.value) return;
     positionReady = false;
     currentFile.value = path;
+    largeReading.value = large;
+    textOnly.value = model.textOnly === true;
     headings.value = model.headings;
     readingArea.value.scrollTop = 0;
     virtualReader = createVirtualReader(body.value, readingArea.value, model, () => {
@@ -692,7 +735,7 @@ onBeforeUnmount(() => {
         <ReaderIcon :name="pathCopied ? 'check' : 'copy'" />
       </button>
       <div class="reading-tools">
-        <button v-if="currentFile && !editing" class="tonal-button" type="button"
+        <button v-if="currentFile && !editing && !largeReading" class="tonal-button" type="button"
           title="编辑当前文件" @click="startEditing">编辑</button>
         <template v-if="editing">
           <span v-if="dirty" class="edit-dirty" aria-label="未保存的修改">未保存</span>
@@ -933,7 +976,7 @@ onBeforeUnmount(() => {
           <div class="empty-features">
             <span>本地只读</span><span>多级目录</span><span>明暗主题</span>
           </div>
-          <small>UTF-8 · 最大 8 MiB · 不编辑、不扫描目录</small>
+          <small>UTF-8 · 大文件虚拟阅读 · 编辑上限 8 MiB</small>
         </div>
         <div v-if="editing" class="editor-pane">
           <label for="markdown-editor">Markdown 源码 · {{ fileName }}</label>
@@ -943,7 +986,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="currentFile && !editing" class="document-meta">
           <span class="eyebrow">MARKDOWN DOCUMENT</span
-          ><span class="readonly-chip">只读 · 安心阅读</span>
+          ><span class="readonly-chip">{{ textOnly ? "纯文本虚拟阅读" : "只读 · 安心阅读" }}</span>
         </div>
         <!-- This subtree belongs to the sanitized DOM renderer, not a v-html/source cache. -->
         <article
@@ -976,7 +1019,7 @@ onBeforeUnmount(() => {
     <footer class="status-bar">
       <span class="status-dot" aria-hidden="true"></span
       ><span>{{
-        loading ? "正在读取" : editing ? (dirty ? "编辑模式 · 未保存" : "编辑模式") : currentFile ? (virtualized ? "虚拟阅读 · Ctrl F 全文查找" : "本地文档 · 只读模式") : "准备就绪"
+        loading ? "正在读取" : editing ? (dirty ? "编辑模式 · 未保存" : "编辑模式") : currentFile ? (textOnly ? "纯文本虚拟阅读 · Ctrl F 全文查找" : virtualized ? "虚拟阅读 · Ctrl F 全文查找" : "本地文档 · 只读模式") : "准备就绪"
       }}</span
       ><span class="status-hint" title="gg 顶端 · G 底端 · d/e 下滑/上滑半屏 · / 正则查找 · Esc 退出查找">{{ currentFile ? "gg / G 首尾 · d / e 滚动 · / 正则" : "Ctrl O 打开 · Ctrl F 查找" }}</span
       ><span v-if="currentFile" class="reading-progress"
