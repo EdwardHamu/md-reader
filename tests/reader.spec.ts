@@ -23,6 +23,20 @@ async function setup(
       const MiB = 1024 * 1024;
       const sourceOnlyBytes = 24 * MiB + 128;
       let largeSource: string | undefined;
+      let denseSource: string | undefined;
+      function denseFixture() {
+        // Across many paragraphs, the old cumulative token counter exceeded
+        // 400,000 even though no individual paragraph came close to the limit.
+        const paragraph = "A short prose paragraph with **one bold phrase**.";
+        return denseSource ??= [
+          "# Dense Markdown",
+          "**Styled opening** and [Jump to dense tail][late].",
+          (paragraph + "\n\n").repeat(95_000),
+          "## Dense Tail",
+          "DENSE_TAIL_NEEDLE",
+          "[late]: #dense-tail",
+        ].join("\n\n");
+      }
       function renderedFixture() {
         // ASCII so JS offsets match byte offsets in the mocked 1 MiB IPC reads.
         // The fence and the reference definition cross those boundaries.
@@ -107,6 +121,7 @@ async function setup(
               state.active--;
               if (path.includes("missing")) throw new Error("file missing");
               if (path.endsWith("large-fixture.md")) return { path, source: null, bytes: renderedFixture().length, modified: "fixture" };
+              if (path.endsWith("dense-fixture.md")) return { path, source: denseFixture() };
               if (path.endsWith("source-fallback.md")) return { path, source: null, bytes: sourceOnlyBytes, modified: "fixture" };
               if (path.endsWith("budget-fixture.md")) return { path, source: "line\n".repeat(200_001) + "BUDGET_TAIL" };
               return {
@@ -819,6 +834,26 @@ test("oversized Markdown renders in a bounded window, resolves cross-chunk links
   await open(page, "C:/docs/second.md");
   await expect(article.locator("h1")).toHaveText("second");
   await expect(page.getByRole("button", { name: "编辑", exact: true })).toBeVisible();
+});
+
+test("dense Markdown prose around 4.6 MiB renders instead of hitting the old node budget", async ({ page }) => {
+  test.setTimeout(90_000);
+  await setup(page);
+  await open(page, "C:/docs/dense-fixture.md");
+  const article = page.locator("article");
+  await expect(article.locator("h1")).toHaveText("Dense Markdown", { timeout: 60_000 });
+  await expect(page.locator(".readonly-chip")).toHaveText("只读 · 安心阅读");
+  await expect(article).toHaveAttribute("data-virtual", "true");
+  await expect(article.getByText("Styled opening", { exact: true })).toBeVisible();
+  expect(Number(await article.getAttribute("data-blocks"))).toBeGreaterThan(95_000);
+  expect(await article.locator(".virtual-block").count()).toBeLessThan(96);
+  await article.getByRole("link", { name: "Jump to dense tail" }).click();
+  await expect(article.locator("#dense-tail")).toBeInViewport();
+  await page.keyboard.press("Control+f");
+  await page.locator("#find-input").fill("DENSE_TAIL_NEEDLE");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 1");
+  await expect(article.getByText("DENSE_TAIL_NEEDLE")).toBeInViewport();
+  expect(await article.locator(".virtual-block").count()).toBeLessThan(96);
 });
 
 test("oversized source fallback shows the render limit and still searches the entire file", async ({ page }) => {

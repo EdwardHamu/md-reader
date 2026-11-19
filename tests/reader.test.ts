@@ -356,6 +356,44 @@ test("render input and output character budgets are configurable", () => {
     "<p>a<strong>b</strong></p>\n");
 });
 
+test("compacted inlines preserve Markdown escapes, shared references and plugin output", () => {
+  const source = [
+    "# Same *title*",
+    "An &amp; entity and \\*literal\\* with **strong**, ![alt &amp; **bold**](image.png) and [ref][late].",
+    "A hard break  \ncontinues here, an <i>HTML inline</i>, and `inline_code`.",
+    "# Same *title*",
+    "- [x] Done with **formatting**\n- [ ] Next `task`",
+    "Notes[^note] and ^[an **inline** note], then [^note] again.",
+    "| Name | Value |\n| --- | --- |\n| Test | **strong** &amp; `code` |",
+    "[late]: #same-title-1\n[^note]: A _formatted_ note.",
+  ].join("\n\n");
+  const limits = { tokens: 10_000, lines: 1000, tags: 1000 };
+  const original = [...renderMarkdownChunks(source, limits)].join("");
+  assert.equal([...renderMarkdownChunks(source, { ...limits, compactInlines: true })].join(""), original);
+  assert.match(original, /id="same-title-1"/);
+  assert.match(original, /task-list-item-checkbox/);
+  assert.match(original, /footnote-backref/);
+  assert.match(original, /href="#same-title-1"/);
+});
+
+test("compaction permits more than 400000 cumulative allocations without lifting the peak token guard", () => {
+  const source = "# Dense\n\n" + "**bold** `code` *em* and [late][r] ".repeat(3).concat("\n\n").repeat(12_000) +
+    "## Tail\n\nFinished.\n\n[r]: #tail";
+  const limits = { tokens: 400_000, lines: 200_000, tags: 400_000 };
+  assert.throws(() => [...renderMarkdownChunks(source, limits)], /解析超过 400000/);
+  const rendered = [...renderMarkdownChunks(source, { ...limits, compactInlines: true })];
+  assert.equal(rendered.length, 12_003);
+  assert.match(rendered[1], /<strong>bold<\/strong>/);
+  assert.match(rendered[1], /href="#tail"/);
+  assert.match(rendered.at(-1)!, /Finished/);
+  assert.throws(() => [...renderMarkdownChunks("**single dense inline** ".repeat(1000), {
+    ...limits, tokens: 1000, compactInlines: true,
+  })], /解析峰值超过 1000/);
+  assert.throws(() => [...renderMarkdownChunks("Read **all** and *keep* formatting.", {
+    ...limits, htmlChars: 20, compactInlines: true,
+  })], /行内渲染结果超过 HTML/);
+});
+
 test("reading progress preserves the view mode without discarding legacy records", () => {
   const path = "C:/docs/large.md";
   let stored = JSON.stringify([{ path, anchor: { block: 3, offset: 8 } }]);

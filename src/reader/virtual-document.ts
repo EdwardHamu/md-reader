@@ -19,17 +19,24 @@ export interface VirtualDocument {
 
 // The 8 MiB native read/edit limit is independent of this render limit.
 export const MAX_LARGE_MARKDOWN_BYTES = 24 * 1024 * 1024;
+const VIRTUAL_MARKDOWN_LIMITS = {
+  lines: 200_000,
+  tokens: 400_000,
+  tags: 1_200_000,
+  compactInlines: true,
+};
 const LARGE_MARKDOWN_LIMITS = {
+  ...VIRTUAL_MARKDOWN_LIMITS,
   sourceChars: MAX_LARGE_MARKDOWN_BYTES,
   lines: 400_000,
-  tokens: 400_000,
-  tags: 400_000,
   htmlChars: 32 * 1024 * 1024,
 };
 
 const MAX_CHARS = 6000;
 const MAX_NODES = 240;
 const MAX_LINES = 80;
+// Many short paragraphs can fit the character budget but need more entries.
+const MAX_BLOCKS = 100_000;
 
 /** Split oversized sanitized trees while cloning ancestor shells, never source syntax.
  * This keeps inline markup, list/table structure and exactly-once text; only the first
@@ -143,8 +150,8 @@ function* splitElement(root: HTMLElement): Generator<HTMLElement> {
 /** Bound sanitizer batches, reducing parser setup overhead without constructing a full DOM. */
 function* htmlBatches(source: string, large: boolean) {
   let html = "", groups = 0;
-  for (const next of renderMarkdownChunks(source, large ? LARGE_MARKDOWN_LIMITS : undefined)) {
-    if (html && (html.length + next.length > 32_768 || groups >= 64)) {
+  for (const next of renderMarkdownChunks(source, large ? LARGE_MARKDOWN_LIMITS : VIRTUAL_MARKDOWN_LIMITS)) {
+    if (html && (html.length + next.length > 32_768 || groups >= 256)) {
       yield html; html = ""; groups = 0;
     }
     html += next; groups++;
@@ -214,7 +221,7 @@ export async function buildVirtualDocument(
         }
         const serialized = part.outerHTML;
         storedCharacters += serialized.length;
-        if (storedCharacters > storageLimit || index >= 60_000)
+        if (storedCharacters > storageLimit || index >= MAX_BLOCKS)
           throw new DocumentBudgetError("虚拟文档超过分块存储预算。");
         result.blocks.push({
           html: serialized,

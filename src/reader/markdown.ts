@@ -61,6 +61,11 @@ md.use(taskLists, { enabled: false });
 interface RenderBudget {
   tokenCount: number;
   limit: number;
+  compact?: {
+    htmlChars: number;
+    htmlLimit: number;
+    rendered: WeakMap<Token[], string>;
+  };
 }
 
 // Guard allocations while parsing, not just after creating a potentially huge token tree.
@@ -74,8 +79,10 @@ function budgetTokens(
     configurable: true,
     value: (...added: Token[]) => {
       env.tokenCount += added.length;
-      if (env.tokenCount > env.limit)
-        throw new DocumentBudgetError(`解析超过 ${env.limit} 个语法节点，请拆分后阅读。`);
+      if (env.tokenCount > env.limit) {
+        const phase = env.compact ? "解析峰值" : "解析";
+        throw new DocumentBudgetError(`${phase}超过 ${env.limit} 个语法节点，请拆分后阅读。`);
+      }
       return Array.prototype.push.apply(tokens, added);
     },
   });
@@ -93,12 +100,54 @@ md.block.parse = (source, parser, env, tokens) =>
 md.inline.parse = (source, parser, env, tokens) =>
   budgetTokens(tokens, env, () => parseInline(source, parser, env, tokens));
 
+const renderInline = md.renderer.renderInline.bind(md.renderer);
+md.renderer.renderInline = (children, options, env: RenderBudget | undefined) =>
+  env?.compact?.rendered.get(children) ?? renderInline(children, options, env);
+
+// Block parsing still runs for the whole document first, so references keep
+// their normal scope. For ordinary inlines, don't retain every temporary
+// emphasis/link token until all other paragraphs have been parsed.
+md.core.ruler.at("inline", (state) => {
+  const env: RenderBudget = state.env;
+  const compact = state.md.options.linkify || state.md.options.typographer ? undefined : env.compact;
+  for (let i = 0; i < state.tokens.length; i++) {
+    const token = state.tokens[i];
+    if (token.type !== "inline") continue;
+    const before = env.tokenCount;
+    const children = token.children ??= [];
+    state.md.inline.parse(token.content, state.md, env, children);
+    // Anchor, task list and footnote rules still receive their original trees.
+    // Inline footnote parsing can also retain tokens elsewhere in the env.
+    if (!compact || state.tokens[i - 1]?.type === "heading_open" ||
+      /^(?:\[ \]|\[[xX]\]) /.test(token.content) ||
+      token.content.includes("[^") || token.content.includes("^[")) continue;
+
+    // Text escaping is unchanged: the later text_join rule treats these raw
+    // escape/entity tokens as text. Adjacent escaped text concatenates safely.
+    for (const child of children) {
+      if (child.type === "text_special") child.type = "text";
+    }
+    const html = state.md.renderer.renderInline(children, state.md.options, env);
+    compact.htmlChars += html.length;
+    if (compact.htmlChars > compact.htmlLimit)
+      throw new DocumentBudgetError("行内渲染结果超过 HTML 字符预算。");
+    // This is not sanitized HTML yet. The virtual-document path still sends
+    // all generated markup through sanitizeDocumentHtml before mounting.
+    compact.rendered.set(children, html);
+    children.length = 0;
+    // The block token and the bounded HTML remain. No plugin retains these
+    // ordinary inline children, so don't charge their transient allocations.
+    env.tokenCount = before;
+  }
+});
+
 interface MarkdownLimits {
   tokens: number;
   lines: number;
   tags: number;
   sourceChars?: number;
   htmlChars?: number;
+  compactInlines?: boolean;
 }
 
 /** Raw HTML is intentionally NOT trusted: only mount through document.ts.
@@ -119,7 +168,13 @@ export function* renderMarkdownChunks(
   for (let at = body.indexOf("\n"); at !== -1; at = body.indexOf("\n", at + 1)) {
     if (++lines > limits.lines) throw new DocumentBudgetError(`文档超过 ${limits.lines} 行，请拆分后阅读。`);
   }
-  const env: RenderBudget = { tokenCount: 0, limit: limits.tokens };
+  const env: RenderBudget = {
+    tokenCount: 0,
+    limit: limits.tokens,
+    ...(limits.compactInlines && {
+      compact: { htmlChars: 0, htmlLimit, rendered: new WeakMap<Token[], string>() },
+    }),
+  };
   const tokens = md.parse(body, env);
   let count = 0;
   const visit = (items: Token[]) => {
