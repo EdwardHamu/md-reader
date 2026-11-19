@@ -15,9 +15,14 @@ export interface RecentFileEntry {
 
 function isAnchor(value: unknown): value is ReadingAnchor {
   if (!value || typeof value !== "object") return false;
-  const { block, offset } = value as Partial<ReadingAnchor>;
+  const { block, offset, mode } = value as Partial<ReadingAnchor>;
   return Number.isSafeInteger(block) && block! >= 0 &&
-    typeof offset === "number" && Number.isFinite(offset) && offset >= 0;
+    typeof offset === "number" && Number.isFinite(offset) && offset >= 0 &&
+    (mode === undefined || mode === "markdown" || mode === "text");
+}
+
+function copyAnchor({ block, offset, mode }: ReadingAnchor): ReadingAnchor {
+  return mode === undefined ? { block, offset } : { block, offset, mode };
 }
 
 /** Keep only positions, never source text or document DOM. Oldest entry goes first. */
@@ -34,7 +39,7 @@ export function createReadingProgressStore(storage: ProgressStorage | null) {
         const { path, anchor } = entry as { path?: unknown; anchor?: unknown };
         if (typeof path !== "string" || !path || !isAnchor(anchor)) continue;
         positions.delete(path);
-        positions.set(path, { block: anchor.block, offset: anchor.offset });
+        positions.set(path, copyAnchor(anchor));
         newest = path;
         if (positions.size > MAX_FILES) positions.delete(positions.keys().next().value!);
       }
@@ -58,9 +63,10 @@ export function createReadingProgressStore(storage: ProgressStorage | null) {
     remember(path: string, anchor: ReadingAnchor): boolean {
       if (!path || !isAnchor(anchor)) return false;
       const previous = positions.get(path);
-      if (newest === path && previous?.block === anchor.block && previous.offset === anchor.offset) return false;
+      if (newest === path && previous?.block === anchor.block && previous.offset === anchor.offset &&
+        previous.mode === anchor.mode) return false;
       positions.delete(path);
-      positions.set(path, { block: anchor.block, offset: anchor.offset });
+      positions.set(path, copyAnchor(anchor));
       newest = path;
       if (positions.size > MAX_FILES) positions.delete(positions.keys().next().value!);
       dirty = true;

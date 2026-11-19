@@ -3,7 +3,11 @@ import type { VirtualDocument } from "./virtual-document";
 import { findAnchor } from "./paths";
 import { createSmoothScroll } from "./smooth-scroll";
 
-export interface ReadingAnchor { block: number; offset: number }
+export interface ReadingAnchor {
+  block: number;
+  offset: number;
+  mode?: "markdown" | "text";
+}
 
 /** Owns only the mounted window, with no detached-node cache. */
 export function createVirtualReader(
@@ -13,7 +17,8 @@ export function createVirtualReader(
   changed: () => void
 ) {
   const smooth = createSmoothScroll(area);
-  const virtual = model.textOnly === true || model.blocks.length > 80;
+  const mode = model.textOnly ? "text" : "markdown";
+  const virtual = model.textOnly === true || model.forceVirtual === true || model.blocks.length > 80;
   const top = document.createElement("div");
   const content = document.createElement("div");
   const bottom = document.createElement("div");
@@ -54,7 +59,7 @@ export function createVirtualReader(
   function capture(): ReadingAnchor {
     const position = Math.max(0, area.scrollTop - origin());
     const block = index.at(position);
-    return { block, offset: position - index.prefix(block) };
+    return { block, offset: position - index.prefix(block), mode };
   }
   function spacers(start: number, end: number) {
     top.style.height = `${index.prefix(start)}px`;
@@ -154,6 +159,7 @@ export function createVirtualReader(
     return mounted.get(block) || null;
   }
   function restore(anchor: ReadingAnchor) {
+    if (anchor.mode !== undefined && anchor.mode !== mode) return;
     smooth.cancel();
     const block = Math.min(Math.max(0, anchor.block), model.blocks.length - 1);
     if (block < 0) return;

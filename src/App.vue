@@ -54,6 +54,7 @@ const currentFile = ref("");
 const loading = ref(false);
 const largeReading = ref(false);
 const textOnly = ref(false);
+const renderFallback = ref("");
 const editing = ref(false);
 const saving = ref(false);
 const editSource = ref("");
@@ -302,6 +303,7 @@ function clearDocument() {
   virtualized.value = false;
   largeReading.value = false;
   textOnly.value = false;
+  renderFallback.value = "";
   activeId.value = "";
   progress.value = 0;
   cancelAnimationFrame(scrollFrame);
@@ -312,13 +314,15 @@ function clearDocument() {
 async function* readLargeText(path: string, data: LargeDocumentData, cancelled: () => boolean) {
   if (!Number.isSafeInteger(data.bytes) || data.bytes <= 0) throw new Error("大文件大小无效。");
   let offset = 0;
-  while (offset < data.bytes && !cancelled()) {
+  while (offset < data.bytes) {
+    if (cancelled()) throw new DOMException("Document replaced", "AbortError");
     const part = await invoke<DocumentChunk>("read_document_chunk", {
       path, offset, size: data.bytes, modified: data.modified,
     });
     if (cancelled()) throw new DOMException("Document replaced", "AbortError");
     if (typeof part.source !== "string" || !part.source || !Number.isSafeInteger(part.nextOffset)
-      || part.nextOffset <= offset || part.nextOffset > data.bytes) {
+      || part.nextOffset <= offset || part.nextOffset > data.bytes
+      || part.nextOffset - offset > 1024 * 1024 || part.source.length > part.nextOffset - offset) {
       throw new Error("文件分段无效，请重新打开。");
     }
     offset = part.nextOffset;
@@ -340,27 +344,42 @@ const loader = createLatestLoader(
     const cancelled = () => disposed || revision !== interaction;
     if (cancelled()) throw new DOMException("Document replaced", "AbortError");
     const opened = data.value;
-    if (opened.source === null) {
+    const large = opened.source === null;
+    const { buildVirtualDocument, DocumentBudgetError, MAX_LARGE_MARKDOWN_BYTES } = renderer.value;
+    async function plainText(chunks: AsyncIterable<string> | Iterable<string>, fallback: string) {
       const { buildTextVirtualDocument } = await import("./reader/text-document");
-      const model = await buildTextVirtualDocument(readLargeText(request.path, opened, cancelled), cancelled);
-      return { path: opened.path, model, large: true };
+      const model = await buildTextVirtualDocument(chunks, cancelled);
+      return { path: opened.path, model, large, fallback };
     }
+    let source: string;
+    if (opened.source === null) {
+      const chunks = readLargeText(request.path, opened, cancelled);
+      if (opened.bytes > MAX_LARGE_MARKDOWN_BYTES) {
+        const limitMiB = MAX_LARGE_MARKDOWN_BYTES / (1024 * 1024);
+        return plainText(chunks, `超过 ${limitMiB} MiB 排版上限`);
+      }
+      // Keep document-wide Markdown semantics across IPC chunks. Collect only
+      // below the separate render limit; no document-sized DOM is mounted.
+      const parts: string[] = [];
+      for await (const chunk of chunks) parts.push(chunk);
+      source = parts.join("");
+    } else source = opened.source;
     try {
-      const model = await renderer.value.buildVirtualDocument(opened.source, opened.path, cancelled);
-      return { path: opened.path, model, large: false };
+      const model = await buildVirtualDocument(source, opened.path, cancelled, { large });
+      return { path: opened.path, model, large, fallback: "" };
     } catch (error) {
-      if (!(error instanceof renderer.value.DocumentBudgetError)) throw error;
-      const { buildTextVirtualDocument } = await import("./reader/text-document");
-      const model = await buildTextVirtualDocument([opened.source], cancelled);
-      return { path: opened.path, model, large: false };
+      if (!(error instanceof DocumentBudgetError)) throw error;
+      // Reuse the already validated source, rather than re-reading the file.
+      return plainText([source], error.message);
     }
   },
-  ({ path, model, large }, request) => {
+  ({ path, model, large, fallback }, request) => {
     if (!body.value || !readingArea.value) return;
     positionReady = false;
     currentFile.value = path;
     largeReading.value = large;
     textOnly.value = model.textOnly === true;
+    renderFallback.value = fallback;
     headings.value = model.headings;
     readingArea.value.scrollTop = 0;
     virtualReader = createVirtualReader(body.value, readingArea.value, model, () => {
@@ -374,8 +393,13 @@ const loader = createLatestLoader(
     const view = virtualReader;
     const restoreTop = pendingScrollTop;
     const restoreAnchor = pendingAnchor;
-    const remembered = readingProgress.get(path);
-    if (readingProgress.remember(path, remembered ?? { block: 0, offset: 0 }))
+    const mode = model.textOnly ? "text" : "markdown";
+    const savedAnchor = readingProgress.get(path);
+    // Older large-file positions used raw text blocks, not rendered blocks.
+    // Keep legacy positions in unchanged views; never restore raw indices in Markdown.
+    const remembered = savedAnchor && (savedAnchor.mode === undefined
+      ? !large || mode === "text" : savedAnchor.mode === mode) ? savedAnchor : undefined;
+    if (readingProgress.remember(path, { ...(remembered ?? { block: 0, offset: 0 }), mode }))
       scheduleProgressFlush();
     refreshRecentFiles();
     pendingScrollTop = -1;
@@ -986,7 +1010,9 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="currentFile && !editing" class="document-meta">
           <span class="eyebrow">MARKDOWN DOCUMENT</span
-          ><span class="readonly-chip">{{ textOnly ? "纯文本虚拟阅读" : "只读 · 安心阅读" }}</span>
+          ><span class="readonly-chip">{{
+            textOnly ? `纯文本虚拟阅读 · ${renderFallback}` : largeReading ? "大文件 Markdown 虚拟阅读" : "只读 · 安心阅读"
+          }}</span>
         </div>
         <!-- This subtree belongs to the sanitized DOM renderer, not a v-html/source cache. -->
         <article

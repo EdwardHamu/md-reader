@@ -30,6 +30,7 @@ export class DocumentBudgetError extends Error {}
 
 const MAX_HIGHLIGHT_CHARS = 20_000;
 const MAX_TOKENS = 60_000;
+const MAX_SOURCE_CHARS = 8 * 1024 * 1024;
 const MAX_HTML_CHARS = 12 * 1024 * 1024;
 const md: MarkdownIt = new MarkdownIt({
   html: true,
@@ -92,15 +93,25 @@ md.block.parse = (source, parser, env, tokens) =>
 md.inline.parse = (source, parser, env, tokens) =>
   budgetTokens(tokens, env, () => parseInline(source, parser, env, tokens));
 
+interface MarkdownLimits {
+  tokens: number;
+  lines: number;
+  tags: number;
+  sourceChars?: number;
+  htmlChars?: number;
+}
+
 /** Raw HTML is intentionally NOT trusted: only mount through document.ts.
  * Parse once (references, duplicate slugs and footnotes keep document-wide context),
  * then render complete top-level token groups rather than one giant HTML string.
  */
 export function* renderMarkdownChunks(
   source: string,
-  limits = { tokens: 400_000, lines: 200_000, tags: 400_000 }
+  limits: MarkdownLimits = { tokens: 400_000, lines: 200_000, tags: 400_000 }
 ): Generator<string> {
-  if (source.length > 8 * 1024 * 1024) throw new DocumentBudgetError("文档超过 8 Mi 字符预算。");
+  const sourceLimit = limits.sourceChars ?? MAX_SOURCE_CHARS;
+  const htmlLimit = limits.htmlChars ?? MAX_HTML_CHARS;
+  if (source.length > sourceLimit) throw new DocumentBudgetError("源文本超过渲染字符预算。");
   const normalized = source.replace(/^\uFEFF/, "");
   const matter = /^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$)/.exec(normalized);
   const body = matter ? normalized.slice(matter[0].length) : normalized;
@@ -121,7 +132,7 @@ export function* renderMarkdownChunks(
   let characters = 0, tags = 0;
   function checked(html: string) {
     characters += html.length;
-    if (characters > MAX_HTML_CHARS) throw new DocumentBudgetError("渲染结果超过 12 Mi 字符，请拆分文档后阅读。");
+    if (characters > htmlLimit) throw new DocumentBudgetError("渲染结果超过 HTML 字符预算。");
     for (let at = html.indexOf("<"); at !== -1; at = html.indexOf("<", at + 1)) {
       if (++tags > limits.tags) throw new DocumentBudgetError(`文档超过 ${limits.tags} 个 HTML 标记，请拆分后阅读。`);
     }

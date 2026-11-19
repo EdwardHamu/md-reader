@@ -51,6 +51,7 @@ AGENTS.md
 docs/*
 !docs/mcp-md-reader-minimal-memory.md
 !docs/mcp-release-win.md
+!docs/large-file-virtual-reading.md
 
 # Browser test artifacts
 test-results/

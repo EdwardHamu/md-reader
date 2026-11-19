@@ -20,6 +20,23 @@ async function setup(
         reads: [] as string[],
         opened: [] as string[],
       };
+      const MiB = 1024 * 1024;
+      const sourceOnlyBytes = 24 * MiB + 128;
+      let largeSource: string | undefined;
+      function renderedFixture() {
+        // ASCII so JS offsets match byte offsets in the mocked 1 MiB IPC reads.
+        // The fence and the reference definition cross those boundaries.
+        return largeSource ??= [
+          "# Large Markdown",
+          "**Rendered prose** - [Jump to tail][late]",
+          "| Name | Value |\n| --- | --- |\n| Sample | 42 |",
+          "<script>not markup</script>",
+          "```text\n" + "large code line ".padEnd(240, "x").concat("\n").repeat(36_000) + "```",
+          "## Large Tail",
+          "EXACT_TAIL_SENTINEL",
+          "[late]: #large-tail",
+        ].join("\n\n");
+      }
       Object.assign(window, {
         testState: state,
         emitDrop: (paths: string[]) =>
@@ -67,10 +84,17 @@ async function setup(
             }
             if (command === "read_document_chunk") {
               const offset = Number(args.offset);
-              const part = "<script>not markup</script> 中文🙂\n" + "line of source text\n".repeat(35_000);
-              const final = offset === 8 * 1024 * 1024;
-              return { source: part + (final ? "\nEXACT_TAIL_SENTINEL" : ""),
-                nextOffset: final ? 8 * 1024 * 1024 + 256 : offset + 1024 * 1024 };
+              if (String(args.path).endsWith("source-fallback.md")) {
+                const nextOffset = Math.min(offset + MiB, sourceOnlyBytes);
+                const prefix = offset === 0 ? "# Unrendered heading\n\n" : "";
+                const suffix = nextOffset === sourceOnlyBytes ? "\nSOURCE_ONLY_TAIL" : "";
+                const size = nextOffset - offset - prefix.length - suffix.length;
+                const line = "source content".padEnd(240, "x") + "\n";
+                return { source: prefix + line.repeat(Math.ceil(size / line.length)).slice(0, size) + suffix, nextOffset };
+              }
+              const text = renderedFixture();
+              const nextOffset = Math.min(offset + MiB, text.length);
+              return { source: text.slice(offset, nextOffset), nextOffset };
             }
             if (command === "read_document") {
               const path = String(args.path);
@@ -82,7 +106,8 @@ async function setup(
               );
               state.active--;
               if (path.includes("missing")) throw new Error("file missing");
-              if (path.endsWith("large-fixture.md")) return { path, source: null, bytes: 8 * 1024 * 1024 + 256, modified: "fixture" };
+              if (path.endsWith("large-fixture.md")) return { path, source: null, bytes: renderedFixture().length, modified: "fixture" };
+              if (path.endsWith("source-fallback.md")) return { path, source: null, bytes: sourceOnlyBytes, modified: "fixture" };
               if (path.endsWith("budget-fixture.md")) return { path, source: "line\n".repeat(200_001) + "BUDGET_TAIL" };
               return {
                 path,
@@ -764,22 +789,52 @@ test("virtual: cross-slice search and delayed image measurements preserve the vi
   await expect(page.locator(".markdown-body p").filter({ hasText: "Paragraph 50" })).toBeInViewport();
 });
 
-test("oversized file opens in a bounded virtual window, searches its tail and stays read-only", async ({ page }) => {
+test("oversized Markdown renders in a bounded window, resolves cross-chunk links and searches its tail", async ({ page }) => {
+  test.setTimeout(60_000);
   await setup(page);
   await open(page, "C:/docs/large-fixture.md");
   const article = page.locator("article");
-  await expect(article).toHaveAttribute("data-virtual", "true", { timeout: 15_000 });
-  await expect(page.getByText("纯文本虚拟阅读", { exact: true })).toBeVisible();
+  await expect(article).toHaveAttribute("data-virtual", "true", { timeout: 30_000 });
+  await expect(page.getByText("大文件 Markdown 虚拟阅读", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "编辑", exact: true })).toHaveCount(0);
+  await expect(article.locator("h1")).toHaveText("Large Markdown");
+  await expect(article.locator("strong")).toHaveText("Rendered prose");
+  await expect(article.locator("table td").last()).toHaveText("42");
+  await expect(article.locator("pre code").first()).toContainText("large code line");
   await expect(article.locator("script")).toHaveCount(0);
-  await expect(article.locator(".virtual-block").first()).toContainText("<script>not markup</script>");
+  await expect(article).not.toContainText("not markup");
+  expect(Number(await article.getAttribute("data-blocks"))).toBeGreaterThan(1000);
+  expect(await article.locator(".virtual-block").count()).toBeLessThan(32);
+  const link = article.getByRole("link", { name: "Jump to tail" });
+  await expect(link).toHaveAttribute("href", "#large-tail");
+  await link.click();
+  await expect(article.locator("#large-tail")).toBeInViewport();
+  await page.keyboard.press("Alt+ArrowLeft");
+  await expect(article.locator("h1")).toBeInViewport();
   await page.keyboard.press("Control+f");
   await page.locator("#find-input").fill("EXACT_TAIL_SENTINEL");
-  await expect(article).toContainText("EXACT_TAIL_SENTINEL");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 1");
+  await expect(article.getByText("EXACT_TAIL_SENTINEL")).toBeInViewport();
   expect(await article.locator(".virtual-block").count()).toBeLessThan(32);
   await open(page, "C:/docs/second.md");
   await expect(article.locator("h1")).toHaveText("second");
   await expect(page.getByRole("button", { name: "编辑", exact: true })).toBeVisible();
+});
+
+test("oversized source fallback shows the render limit and still searches the entire file", async ({ page }) => {
+  test.setTimeout(60_000);
+  await setup(page);
+  await open(page, "C:/docs/source-fallback.md");
+  const article = page.locator("article");
+  await expect(article).toHaveAttribute("data-virtual", "true", { timeout: 30_000 });
+  await expect(page.locator(".readonly-chip")).toContainText("超过 24 MiB 排版上限");
+  await expect(article.locator("h1")).toHaveCount(0);
+  await expect(article).toContainText("# Unrendered heading");
+  await page.keyboard.press("Control+f");
+  await page.locator("#find-input").fill("SOURCE_ONLY_TAIL");
+  await expect(page.locator(".find-bar output")).toHaveText("1 / 1");
+  await expect(article).toContainText("SOURCE_ONLY_TAIL");
+  expect(await article.locator(".virtual-block").count()).toBeLessThan(32);
 });
 
 test("a structural Markdown budget switches to continuously scrollable source text", async ({ page }) => {
@@ -787,6 +842,7 @@ test("a structural Markdown budget switches to continuously scrollable source te
   await open(page, "C:/docs/budget-fixture.md");
   const article = page.locator("article");
   await expect(article).toHaveAttribute("data-virtual", "true", { timeout: 15_000 });
+  await expect(page.locator(".readonly-chip")).toContainText("超过 200000 行");
   await page.keyboard.press("Control+f");
   await page.locator("#find-input").fill("BUDGET_TAIL");
   await expect(article).toContainText("BUDGET_TAIL");

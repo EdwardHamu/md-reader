@@ -348,6 +348,25 @@ test("find spans virtual slices of one block without crossing semantic boundarie
   assert.equal(findText([{ text: "aa", group: 1 }, { text: "aa", group: 1 }, { text: "aa", group: 1 }], "aaa").matches.length, 2);
 });
 
+test("render input and output character budgets are configurable", () => {
+  const limits = { tokens: 20, lines: 20, tags: 20 };
+  assert.throws(() => Array.from(renderMarkdownChunks("a**b**", { ...limits, sourceChars: 5 })), /源文本超过/);
+  assert.throws(() => Array.from(renderMarkdownChunks("a**b**", { ...limits, htmlChars: 5 })), /渲染结果超过/);
+  assert.equal(Array.from(renderMarkdownChunks("a**b**", { ...limits, sourceChars: 6, htmlChars: 100 })).join(""),
+    "<p>a<strong>b</strong></p>\n");
+});
+
+test("reading progress preserves the view mode without discarding legacy records", () => {
+  const path = "C:/docs/large.md";
+  let stored = JSON.stringify([{ path, anchor: { block: 3, offset: 8 } }]);
+  const storage = { getItem: () => stored, setItem: (_key: string, value: string) => { stored = value; } };
+  const store = createReadingProgressStore(storage);
+  assert.deepEqual(store.get(path), { block: 3, offset: 8 });
+  assert.equal(store.remember(path, { block: 3, offset: 8, mode: "markdown" }), true);
+  store.flush();
+  assert.deepEqual(createReadingProgressStore(storage).get(path), { block: 3, offset: 8, mode: "markdown" });
+});
+
 test("large text slices preserve all lines, Unicode, and cross-slice matches", async () => {
   const { buildTextVirtualDocument } = await import("../src/reader/text-document.ts");
   const { findText } = await import("../src/reader/virtual-index.ts");

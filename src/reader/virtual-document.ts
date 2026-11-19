@@ -11,10 +11,21 @@ export interface VirtualBlock {
 export interface VirtualDocument {
   blocks: VirtualBlock[];
   textOnly?: boolean;
+  forceVirtual?: boolean;
   headings: Heading[];
   anchors: Map<string, number>;
   codes: Map<number, { block: number; start: number; length: number }[]>;
 }
+
+// The 8 MiB native read/edit limit is independent of this render limit.
+export const MAX_LARGE_MARKDOWN_BYTES = 24 * 1024 * 1024;
+const LARGE_MARKDOWN_LIMITS = {
+  sourceChars: MAX_LARGE_MARKDOWN_BYTES,
+  lines: 400_000,
+  tokens: 400_000,
+  tags: 400_000,
+  htmlChars: 32 * 1024 * 1024,
+};
 
 const MAX_CHARS = 6000;
 const MAX_NODES = 240;
@@ -130,9 +141,9 @@ function* splitElement(root: HTMLElement): Generator<HTMLElement> {
 }
 
 /** Bound sanitizer batches, reducing parser setup overhead without constructing a full DOM. */
-function* htmlBatches(source: string) {
+function* htmlBatches(source: string, large: boolean) {
   let html = "", groups = 0;
-  for (const next of renderMarkdownChunks(source)) {
+  for (const next of renderMarkdownChunks(source, large ? LARGE_MARKDOWN_LIMITS : undefined)) {
     if (html && (html.length + next.length > 32_768 || groups >= 64)) {
       yield html; html = ""; groups = 0;
     }
@@ -144,15 +155,20 @@ function* htmlBatches(source: string) {
 export async function buildVirtualDocument(
   source: string,
   path: string,
-  cancelled: () => boolean = () => false
+  cancelled: () => boolean = () => false,
+  { large = false }: { large?: boolean } = {}
 ): Promise<VirtualDocument> {
-  const result: VirtualDocument = { blocks: [], headings: [], anchors: new Map(), codes: new Map() };
+  if (cancelled()) throw new DOMException("Document replaced", "AbortError");
+  const storageLimit = (large ? 32 : 16) * 1024 * 1024;
+  const result: VirtualDocument = {
+    blocks: [], headings: [], anchors: new Map(), codes: new Map(), forceVirtual: large,
+  };
   const used = new Set<string>();
   let deadline = performance.now() + 8;
   let codeGroup = 0;
   let sourceGroup = 0;
   let storedCharacters = 0;
-  for (const html of htmlBatches(source)) {
+  for (const html of htmlBatches(source, large)) {
     if (cancelled()) throw new DOMException("Document replaced", "AbortError");
     const { fragment } = sanitizeDocumentHtml(html, path, result.headings, used);
     for (const child of Array.from(fragment.childNodes)) {
@@ -198,8 +214,8 @@ export async function buildVirtualDocument(
         }
         const serialized = part.outerHTML;
         storedCharacters += serialized.length;
-        if (storedCharacters > 16 * 1024 * 1024 || index >= 60_000)
-          throw new DocumentBudgetError("虚拟文档超过 16 Mi 字符或 60000 块预算，请拆分后阅读。");
+        if (storedCharacters > storageLimit || index >= 60_000)
+          throw new DocumentBudgetError("虚拟文档超过分块存储预算。");
         result.blocks.push({
           html: serialized,
           group: elementGroup,
